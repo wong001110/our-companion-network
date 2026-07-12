@@ -5,7 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { IdentityController } from './identity.controller';
 import { IdentityService } from './identity.service';
 import { JwtStrategy } from '../common/strategies/jwt.strategy';
-import { JwtRefreshStrategy } from '../common/strategies/jwt-refresh.strategy';
+import { AuthRateLimitGuard } from '../common/guards/auth-rate-limit.guard';
 
 @Module({
   imports: [
@@ -22,7 +22,7 @@ import { JwtRefreshStrategy } from '../common/strategies/jwt-refresh.strategy';
     }),
   ],
   controllers: [IdentityController],
-  providers: [IdentityService, JwtStrategy, JwtRefreshStrategy],
+  providers: [IdentityService, JwtStrategy, AuthRateLimitGuard],
   exports: [IdentityService],
 })
 export class IdentityModule {}

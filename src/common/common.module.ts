@@ -3,7 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './strategies/jwt.strategy';
-import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
+import { SocketAuthService } from './socket-auth.service';
 
 @Module({
   imports: [
@@ -19,7 +19,7 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
     }),
     PassportModule,
   ],
-  providers: [JwtStrategy, JwtRefreshStrategy],
-  exports: [JwtModule],
+  providers: [JwtStrategy, SocketAuthService],
+  exports: [JwtModule, SocketAuthService],
 })
 export class CommonModule {}

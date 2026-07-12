@@ -13,33 +13,37 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { CurrentUser, UserPayload } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
+import { AuthRateLimitGuard } from '../common/guards/auth-rate-limit.guard';
 
 @Controller('auth')
 export class IdentityController {
   constructor(private readonly identityService: IdentityService) {}
 
   @Public()
+  @UseGuards(AuthRateLimitGuard)
   @Post('register')
   async register(@Body() dto: RegisterDto) {
     return this.identityService.register(dto);
   }
 
   @Public()
+  @UseGuards(AuthRateLimitGuard)
   @Post('login')
   async login(@Body() dto: LoginDto) {
     return this.identityService.login(dto);
   }
 
   @Public()
+  @UseGuards(AuthRateLimitGuard)
   @Post('refresh')
   async refreshToken(@Body() dto: RefreshTokenDto) {
-    return this.identityService.refreshToken(dto.refreshToken);
+    return this.identityService.refreshToken(dto.refreshToken, dto.deviceId);
   }
 
   @UseGuards(AuthGuard('jwt'))
   @Post('logout')
-  async logout(@Body() dto: RefreshTokenDto) {
-    return this.identityService.logout(dto.refreshToken);
+  async logout(@CurrentUser() user: UserPayload, @Body() dto: RefreshTokenDto) {
+    return this.identityService.logout(user.id, dto.deviceId);
   }
 
   @UseGuards(AuthGuard('jwt'))

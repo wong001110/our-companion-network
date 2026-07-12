@@ -6,6 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { randomUUID } from 'crypto';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -15,6 +16,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Internal server error';
+    let code = 'INTERNAL_ERROR';
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -23,12 +25,28 @@ export class AllExceptionsFilter implements ExceptionFilter {
         typeof exceptionResponse === 'string'
           ? exceptionResponse
           : (exceptionResponse as any).message || message;
+      code = this.errorCode(status, exceptionResponse);
     }
 
     response.status(status).json({
-      statusCode: status,
-      message,
-      timestamp: new Date().toISOString(),
+      error: {
+        code,
+        message: Array.isArray(message) ? message.join(', ') : message,
+        requestId: randomUUID(),
+      },
     });
+  }
+
+  private errorCode(status: number, response: unknown): string {
+    const supplied = typeof response === 'object' && response !== null ? (response as { code?: unknown }).code : undefined;
+    if (typeof supplied === 'string') return supplied;
+    return ({
+      [HttpStatus.BAD_REQUEST]: 'VALIDATION_ERROR',
+      [HttpStatus.UNAUTHORIZED]: 'AUTHENTICATION_FAILED',
+      [HttpStatus.FORBIDDEN]: 'FORBIDDEN',
+      [HttpStatus.NOT_FOUND]: 'NOT_FOUND',
+      [HttpStatus.CONFLICT]: 'CONFLICT',
+      [HttpStatus.TOO_MANY_REQUESTS]: 'RATE_LIMITED',
+    } as Record<number, string>)[status] ?? 'INTERNAL_ERROR';
   }
 }

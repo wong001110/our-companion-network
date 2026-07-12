@@ -12,12 +12,14 @@ import { CommunityModule } from './community/community.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { MetaModule } from './meta/meta.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     CommonModule,
+    MetaModule,
     IdentityModule,
     FriendModule,
     PresenceModule,

@@ -25,19 +25,26 @@ model User {
   receivedVisits   Visit[]       @relation("ReceivedVisits")
   notifications    Notification[]
   presence         Presence?
-  refreshTokens    RefreshToken[]
+  deviceSessions   DeviceSession[]
   blockedUsers     BlockedUser[] @relation("Blocker")
   blockedBy        BlockedUser[] @relation("Blocked")
   discoveries      Discovery[]
 }
 
-model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+model DeviceSession {
+  id                      String    @id @default(uuid())
+  userId                  String
+  deviceId                String
+  refreshTokenHash        String
+  previousRefreshTokenHash String?
+  createdAt               DateTime  @default(now())
+  lastUsedAt              DateTime  @updatedAt
+  expiresAt               DateTime
+  revokedAt               DateTime?
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([deviceId])
 }
 
 model Profile {
