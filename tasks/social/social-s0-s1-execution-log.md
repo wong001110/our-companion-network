@@ -5,8 +5,8 @@
 - Fixed logout contract: `LogoutDto` accepts only `deviceId`; the access-token device ID must match or the server returns `DEVICE_SESSION_MISMATCH`. A successful logout revokes the matching active device session.
 - Access-token validation now requires an active, non-revoked, non-expired `DeviceSession`, applying the same device-session revocation rule to protected REST and sockets.
 - Introduced `ProtocolConfigService` as the single protocol/version/features source for metadata and socket authentication. Rate-limit maps now remove expired entries and cap retained keys; deployment policy documents the required future shared limiter/trusted-proxy boundary.
-- Tests added: `src/common/protocol-config.service.spec.ts`.
-- Commands: `npm run prisma:generate` passed; `npx prisma validate` passed; `npm run build` passed; `npm test -- --runInBand` passed (1 suite, 1 test); `git diff --check` passed. `npm run test:e2e` failed because this prototype has no `test/jest-e2e.json` configuration file.
+- Tests added: `src/common/protocol-config.service.spec.ts`, `src/identity/identity.service.spec.ts`, and HTTP `test/meta.e2e-spec.ts`. Added `test/jest-e2e.json` so the documented E2E command is executable.
+- Commands: `npm run prisma:generate` passed; `npx prisma validate` passed; `npm run build` passed; `npm test -- --runInBand` passed (2 suites, 3 tests); `npm run test:e2e` passed (1 suite, 1 HTTP contract test); `git diff --check` passed.
 - Manual integration: not run. Docker is not installed and no reachable PostgreSQL/Network Server was available. Full device-session/socket lifecycle verification remains required before S1 is closed.
 - Deferred unchanged: S2–S5 friends, publishing, assets, visits, durable events, and remote AI remain out of scope.
 
