@@ -6,7 +6,6 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { JwtService } from '@nestjs/jwt';
 import { VisitService } from './visit.service';
 import { PresenceGateway } from '../presence/presence.gateway';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,7 +21,6 @@ export class VisitGateway {
   server: Server;
 
   constructor(
-    private jwtService: JwtService,
     private visitService: VisitService,
     private presenceGateway: PresenceGateway,
     private prisma: PrismaService,

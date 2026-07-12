@@ -1,4 +1,5 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import * as bcrypt from 'bcryptjs';
 import { IdentityService } from './identity.service';
 
 describe('IdentityService logout', () => {
@@ -14,5 +15,29 @@ describe('IdentityService logout', () => {
     const service = new IdentityService({ deviceSession: { updateMany } } as never, {} as never, {} as never);
     await expect(service.logout('user-1', 'device-a', 'device-a')).resolves.toEqual({ message: 'Logged out successfully' });
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-1', deviceId: 'device-a', revokedAt: null } }));
+  });
+
+  it('revokes a device session when a consumed refresh token is reused', async () => {
+    const previousRefreshTokenHash = await bcrypt.hash('consumed-refresh-token', 4);
+    const update = jest.fn().mockResolvedValue({});
+    const service = new IdentityService({
+      deviceSession: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'session-1',
+          userId: 'user-1',
+          refreshTokenHash: await bcrypt.hash('current-refresh-token', 4),
+          previousRefreshTokenHash,
+          revokedAt: null,
+          expiresAt: new Date(Date.now() + 60_000),
+        }]),
+        update,
+      },
+    } as never, {} as never, {} as never);
+
+    await expect(service.refreshToken('consumed-refresh-token', 'device-a')).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'session-1' },
+      data: { revokedAt: expect.any(Date) },
+    }));
   });
 });

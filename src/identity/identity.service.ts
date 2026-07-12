@@ -60,14 +60,15 @@ export class IdentityService {
       where: { deviceId },
       include: { user: true },
     });
+    const reused = await this.findMatchingSession(sessions, refreshToken, 'previousRefreshTokenHash');
+    if (reused) {
+      await this.prisma.deviceSession.update({
+        where: { id: reused.id }, data: { revokedAt: new Date() },
+      });
+      throw new UnauthorizedException('Invalid refresh token');
+    }
     const activeSession = await this.findMatchingSession(sessions, refreshToken, 'refreshTokenHash');
     if (!activeSession || activeSession.revokedAt || activeSession.expiresAt <= new Date()) {
-      const reused = await this.findMatchingSession(sessions, refreshToken, 'previousRefreshTokenHash');
-      if (reused) {
-        await this.prisma.deviceSession.update({
-          where: { id: reused.id }, data: { revokedAt: new Date() },
-        });
-      }
       throw new UnauthorizedException('Invalid refresh token');
     }
 

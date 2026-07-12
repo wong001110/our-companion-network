@@ -1,5 +1,13 @@
 # Social S0–S1 execution log
 
+## Live local integration follow-up
+
+- Local PostgreSQL database `our_companion_network` was created and synchronized with the Prisma schema using `npx prisma db push --skip-generate`.
+- Starting the full Network Server exposed two pre-existing Nest dependency-injection failures in `VisitGateway`: an unused `JwtService` constructor dependency and an unexported `PresenceGateway`. The unused dependency was removed and `PresenceGateway` is now exported from `PresenceModule`; `npm run start` then served `GET /api/meta/health` successfully on port 3001.
+- A live client-to-server lifecycle probe against the local server registered a fresh account, authenticated a Socket.IO connection, rotated the refresh token, fetched `/api/auth/me`, recreated the authenticated socket to simulate restart recovery, verified rejected reused refresh tokens revoke REST and Socket access, logged in again, logged out, and verified REST, refresh, and socket reuse are all rejected after logout.
+- The first live probe revealed that a consumed refresh token could be accepted. `IdentityService.refreshToken` now checks the consumed-token hash before the active hash and immediately revokes that device session. Regression coverage was added; `npm test -- --runInBand` passed with 2 suites and 4 tests.
+- Live lifecycle result: passed for register, socket connection, token rotation, account restore, restart-style socket reconnect, consumed-refresh-token revocation, device-session REST/socket invalidation, and logout revocation. The direct probe used distinct device identities against the real Electron-main HTTP and Socket contract; it did not drive the desktop GUI or simulate a server process outage through the rendered UI.
+
 ## Closure repair (after `a1b3c4c2703ac83abc1eff2c4b80673baf0bbf2e`)
 
 - Fixed logout contract: `LogoutDto` accepts only `deviceId`; the access-token device ID must match or the server returns `DEVICE_SESSION_MISMATCH`. A successful logout revokes the matching active device session.
