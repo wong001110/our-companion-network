@@ -1,5 +1,15 @@
 # Social S0–S1 execution log
 
+## Closure repair (after `a1b3c4c2703ac83abc1eff2c4b80673baf0bbf2e`)
+
+- Fixed logout contract: `LogoutDto` accepts only `deviceId`; the access-token device ID must match or the server returns `DEVICE_SESSION_MISMATCH`. A successful logout revokes the matching active device session.
+- Access-token validation now requires an active, non-revoked, non-expired `DeviceSession`, applying the same device-session revocation rule to protected REST and sockets.
+- Introduced `ProtocolConfigService` as the single protocol/version/features source for metadata and socket authentication. Rate-limit maps now remove expired entries and cap retained keys; deployment policy documents the required future shared limiter/trusted-proxy boundary.
+- Tests added: `src/common/protocol-config.service.spec.ts`.
+- Commands: `npm run prisma:generate` passed; `npx prisma validate` passed; `npm run build` passed; `npm test -- --runInBand` passed (1 suite, 1 test); `git diff --check` passed. `npm run test:e2e` failed because this prototype has no `test/jest-e2e.json` configuration file.
+- Manual integration: not run. Docker is not installed and no reachable PostgreSQL/Network Server was available. Full device-session/socket lifecycle verification remains required before S1 is closed.
+- Deferred unchanged: S2–S5 friends, publishing, assets, visits, durable events, and remote AI remain out of scope.
+
 - Baseline: `3dbe059160be70acd952344e97e0c2fa1c66a522` (per implementation directive).
 - Protocol: server `0.1.0`, protocol `0.1`; authoritative contract documents are in `docs/social/` and no shared package was created.
 - Database: migration `20260712000000_device_sessions` removes insecure plaintext refresh-token records and creates device-scoped, hashed sessions. Existing users must sign in again after migration.

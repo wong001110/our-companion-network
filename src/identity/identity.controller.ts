@@ -11,6 +11,7 @@ import { IdentityService } from './identity.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { LogoutDto } from './dto/logout.dto';
 import { CurrentUser, UserPayload } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { AuthRateLimitGuard } from '../common/guards/auth-rate-limit.guard';
@@ -42,8 +43,8 @@ export class IdentityController {
 
   @UseGuards(AuthGuard('jwt'))
   @Post('logout')
-  async logout(@CurrentUser() user: UserPayload, @Body() dto: RefreshTokenDto) {
-    return this.identityService.logout(user.id, dto.deviceId);
+  async logout(@CurrentUser() user: UserPayload, @Body() dto: LogoutDto) {
+    return this.identityService.logout(user.id, user.deviceId, dto.deviceId);
   }
 
   @UseGuards(AuthGuard('jwt'))

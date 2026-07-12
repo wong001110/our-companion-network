@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -73,7 +74,10 @@ export class IdentityService {
     return this.rotateSessionTokens(activeSession.id, activeSession.userId, activeSession.user.email, deviceId);
   }
 
-  async logout(userId: string, deviceId: string) {
+  async logout(userId: string, accessTokenDeviceId: string, deviceId: string) {
+    if (accessTokenDeviceId !== deviceId) {
+      throw new ForbiddenException({ code: 'DEVICE_SESSION_MISMATCH', message: 'Device ID does not match this access token' });
+    }
     await this.prisma.deviceSession.updateMany({
       where: { userId, deviceId, revokedAt: null },
       data: { revokedAt: new Date() },

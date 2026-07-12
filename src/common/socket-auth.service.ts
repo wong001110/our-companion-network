@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
+import { ProtocolConfigService } from './protocol-config.service';
 
 interface AccessPayload { sub: string; email: string; deviceId: string; }
 
@@ -16,6 +17,7 @@ export class SocketAuthService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly protocol: ProtocolConfigService,
   ) {}
 
   configure(server: Server): void {
@@ -31,7 +33,7 @@ export class SocketAuthService {
         if (typeof token !== 'string' || typeof protocolVersion !== 'string' || typeof deviceId !== 'string') {
           return next(new Error('AUTHENTICATION_REQUIRED'));
         }
-        if (protocolVersion !== this.config.get<string>('PROTOCOL_VERSION', '0.1')) {
+        if (protocolVersion !== this.protocol.protocolVersion) {
           return next(new Error('UNSUPPORTED_PROTOCOL_VERSION'));
         }
         const payload = await this.jwtService.verifyAsync<AccessPayload>(token);
@@ -58,9 +60,11 @@ export class SocketAuthService {
     const windowMs = 60_000;
     const limit = Number(this.config.get<string>('SOCKET_AUTH_RATE_LIMIT', '20'));
     const recent = (this.attempts.get(address) ?? []).filter((timestamp) => now - timestamp < windowMs);
+    if (recent.length === 0) this.attempts.delete(address);
     if (recent.length >= limit) return false;
     recent.push(now);
     this.attempts.set(address, recent);
+    if (this.attempts.size > 10_000) this.attempts.delete(this.attempts.keys().next().value);
     return true;
   }
 }

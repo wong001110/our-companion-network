@@ -4,6 +4,7 @@ import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { SocketAuthService } from './socket-auth.service';
+import { ProtocolConfigService } from './protocol-config.service';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import { SocketAuthService } from './socket-auth.service';
     }),
     PassportModule,
   ],
-  providers: [JwtStrategy, SocketAuthService],
-  exports: [JwtModule, SocketAuthService],
+  providers: [JwtStrategy, SocketAuthService, ProtocolConfigService],
+  exports: [JwtModule, SocketAuthService, ProtocolConfigService],
 })
 export class CommonModule {}
