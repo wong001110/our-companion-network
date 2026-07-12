@@ -5,6 +5,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { SocketAuthService } from './socket-auth.service';
 import { ProtocolConfigService } from './protocol-config.service';
+import { SocialEventPublisher } from './social-event-publisher.service';
+import { SocialRateLimitGuard } from './guards/social-rate-limit.guard';
 
 @Module({
   imports: [
@@ -20,7 +22,7 @@ import { ProtocolConfigService } from './protocol-config.service';
     }),
     PassportModule,
   ],
-  providers: [JwtStrategy, SocketAuthService, ProtocolConfigService],
-  exports: [JwtModule, SocketAuthService, ProtocolConfigService],
+  providers: [JwtStrategy, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard],
+  exports: [JwtModule, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard],
 })
 export class CommonModule {}

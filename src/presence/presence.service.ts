@@ -84,7 +84,13 @@ export class PresenceService {
       },
     });
 
-    return presences;
+    const byUser = new Map(presences.map((presence) => [presence.userId, presence]));
+    return friendIds.map((friendId) => byUser.get(friendId) ?? { userId: friendId, status: 'offline', updatedAt: null });
+  }
+
+  async getFriendIds(userId: string): Promise<string[]> {
+    const friendships = await this.prisma.friendship.findMany({ where: { userId }, select: { friendId: true } });
+    return friendships.map((friendship) => friendship.friendId);
   }
 
   async getOnlineFriends(userId: string) {

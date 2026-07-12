@@ -9,8 +9,8 @@ export class ProtocolConfigService {
   readonly features = {
     authentication: true,
     socketConnection: true,
-    friends: false,
-    presence: false,
+    friends: true,
+    presence: true,
     publicCompanions: false,
     assetPacks: false,
     visitInvitations: false,

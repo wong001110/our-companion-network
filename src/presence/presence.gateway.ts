@@ -4,11 +4,14 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
   OnGatewayInit,
+  SubscribeMessage,
+  ConnectedSocket,
 } from '@nestjs/websockets';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { PresenceService } from './presence.service';
 import { SocketAuthService } from '../common/socket-auth.service';
+import { SocialEventPublisher } from '../common/social-event-publisher.service';
 
 @WebSocketGateway({
   cors: { origin: process.env.CORS_ORIGIN || 'http://localhost:3000', credentials: true },
@@ -19,15 +22,19 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
 
   private readonly userSockets = new Map<string, Set<string>>();
   private readonly offlineTimers = new Map<string, NodeJS.Timeout>();
+  private readonly activityTimers = new Map<string, NodeJS.Timeout>();
+  private readonly socketActivity = new Map<string, number>();
 
   constructor(
     private readonly presenceService: PresenceService,
     private readonly socketAuth: SocketAuthService,
     private readonly config: ConfigService,
+    private readonly events: SocialEventPublisher,
   ) {}
 
   afterInit(server: Server): void {
     this.socketAuth.configure(server);
+    this.events.attach(server);
   }
 
   async handleConnection(client: Socket): Promise<void> {
@@ -44,8 +51,11 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     const sockets = this.userSockets.get(userId) ?? new Set<string>();
     const wasOffline = sockets.size === 0;
     sockets.add(client.id);
+    client.join(`user:${userId}`);
+    this.socketActivity.set(client.id, Date.now());
     this.userSockets.set(userId, sockets);
-    if (wasOffline) await this.presenceService.setOnline(userId);
+    if (wasOffline) await this.publishPresence(userId, 'online');
+    this.scheduleIdleCheck(userId);
   }
 
   async handleDisconnect(client: Socket): Promise<void> {
@@ -54,21 +64,59 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     const sockets = this.userSockets.get(userId);
     if (!sockets) return;
     sockets.delete(client.id);
+    this.socketActivity.delete(client.id);
     if (sockets.size > 0) return;
     this.userSockets.delete(userId);
+    const idleTimer = this.activityTimers.get(userId);
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      this.activityTimers.delete(userId);
+    }
     const graceSeconds = Number(this.config.get<string>('PRESENCE_DISCONNECT_GRACE_SECONDS', '45'));
     const timer = setTimeout(() => {
       this.offlineTimers.delete(userId);
-      if (!this.userSockets.has(userId)) void this.presenceService.setOffline(userId);
+      if (!this.userSockets.has(userId)) void this.publishPresence(userId, 'offline');
     }, Math.max(0, graceSeconds) * 1000);
     this.offlineTimers.set(userId, timer);
   }
 
   emitToUser(userId: string, event: string, data: unknown): void {
-    for (const socketId of this.userSockets.get(userId) ?? []) this.server.to(socketId).emit(event, data);
+    this.events.publishToUser(userId, event, data);
   }
 
   isUserOnline(userId: string): boolean {
     return (this.userSockets.get(userId)?.size ?? 0) > 0;
+  }
+
+  @SubscribeMessage('presence.activity')
+  async handleActivity(@ConnectedSocket() client: Socket): Promise<void> {
+    const userId = client.data.userId as string | undefined;
+    if (!userId) return;
+    const now = Date.now();
+    if (now - (this.socketActivity.get(client.id) ?? 0) < 15_000) return;
+    this.socketActivity.set(client.id, now);
+    await this.publishPresence(userId, 'online');
+    this.scheduleIdleCheck(userId);
+  }
+
+  private scheduleIdleCheck(userId: string): void {
+    const existing = this.activityTimers.get(userId);
+    if (existing) clearTimeout(existing);
+    const idleMs = Math.max(1, Number(this.config.get<string>('PRESENCE_IDLE_SECONDS', '300'))) * 1000;
+    const timer = setTimeout(() => {
+      this.activityTimers.delete(userId);
+      const active = [...(this.userSockets.get(userId) ?? [])].some((socketId) => Date.now() - (this.socketActivity.get(socketId) ?? 0) < idleMs);
+      if (active) this.scheduleIdleCheck(userId);
+      else if (this.userSockets.has(userId)) void this.publishPresence(userId, 'idle');
+    }, idleMs);
+    this.activityTimers.set(userId, timer);
+  }
+
+  private async publishPresence(userId: string, status: 'online' | 'idle' | 'offline'): Promise<void> {
+    const presence = status === 'online'
+      ? await this.presenceService.setOnline(userId)
+      : status === 'idle' ? await this.presenceService.setIdle(userId) : await this.presenceService.setOffline(userId);
+    const payload = { userId, status: presence.status, updatedAt: presence.updatedAt.toISOString() };
+    for (const friendId of await this.presenceService.getFriendIds(userId)) this.events.publishToUser(friendId, 'presence.updated', payload);
   }
 }

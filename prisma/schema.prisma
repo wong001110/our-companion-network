@@ -65,8 +65,11 @@ model FriendRequest {
   receiver   User     @relation("ReceivedRequests", fields: [receiverId], references: [id], onDelete: Cascade)
   status     String   @default("pending")
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@unique([senderId, receiverId])
+  @@index([receiverId, status])
+  @@index([senderId, status])
 }
 
 model Friendship {
