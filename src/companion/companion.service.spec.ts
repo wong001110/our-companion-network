@@ -1,7 +1,21 @@
 import { CompanionService } from './companion.service';
+import { createHash } from 'node:crypto';
+import { canonicalJsonStringify, canonicalManifest } from './asset-manifest';
 
 const now = new Date('2026-07-13T00:00:00.000Z');
 const activePack = { id: 'pack-1', companionId: 'companion-1', status: 'active', manifestHash: 'a'.repeat(64), schemaVersion: 1, totalFiles: 1, totalBytes: BigInt(1), createdAt: now, updatedAt: now, completedAt: now, activatedAt: now, supersededAt: null, failureCode: null, companion: { ownerUserId: 'user-1' }, files: [] };
+
+function uploadPack(status: 'uploading' | 'verifying' | 'abandoning' = 'uploading') {
+  const files = ['Idle_Neutral', 'Enter', 'Leave'].map(name => ({ relativePath: `assets/animations/${name}.png`, category: 'animation' as const, mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64) }));
+  const manifest = { format: 'our-companion-asset-pack' as const, schemaVersion: 1 as const, runtime: { defaultAnimation: 'Idle_Neutral' as const, animations: ['Idle_Neutral', 'Enter', 'Leave'].map(name => ({ name, format: 'sprite_sheet' as const, files: [`assets/animations/${name}.png`], frameWidth: 300, frameHeight: 300, frameCount: 1, frameDurationMs: 180, loop: name === 'Idle_Neutral' })) }, files };
+  const manifestHash = createHash('sha256').update(canonicalJsonStringify(canonicalManifest(manifest)), 'utf8').digest('hex');
+  return {
+    id: 'pack-upload', companionId: 'companion-1', status, manifestHash, schemaVersion: 1, manifest, totalFiles: files.length, totalBytes: BigInt(files.length),
+    createdAt: now, updatedAt: now, completedAt: null, activatedAt: null, supersededAt: null, failureCode: null,
+    objectPrefix: 'redacted', companion: { ownerUserId: 'user-1', activeAssetPackId: null },
+    files: files.map((file, index) => ({ ...file, id: `file-${index}`, assetPackId: 'pack-upload', objectKey: `redacted/${index}`, sizeBytes: BigInt(file.sizeBytes) })),
+  };
+}
 
 describe('CompanionService final asset-pack lifecycle', () => {
   it('returns the stable completion envelope when an active completion is retried', async () => {
@@ -30,5 +44,103 @@ describe('CompanionService final asset-pack lifecycle', () => {
     const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 }, deleteObjects: jest.fn().mockRejectedValue(new Error('unavailable')) } as never, {} as never);
     await expect(service.cleanupSupersededPacks()).rejects.toThrow('unavailable');
     expect(prisma.companionAssetPack.delete).not.toHaveBeenCalled();
+  });
+
+  it('never deletes objects for an active pack, even if a stale cleanup read includes it', async () => {
+    const deleteObjects = jest.fn();
+    const prisma = { companionAssetPack: { findMany: jest.fn().mockResolvedValue([{ id: 'pack-1', status: 'active', objectPrefix: 'redacted', files: [] }]), updateMany: jest.fn().mockResolvedValue({ count: 0 }), delete: jest.fn() } };
+    const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 }, deleteObjects } as never, {} as never);
+
+    await expect(service.cleanupSupersededPacks()).resolves.toBe(0);
+    expect(deleteObjects).not.toHaveBeenCalled();
+  });
+
+  it('rejects activation when cleanup claimed the stale superseded pack as deleting', async () => {
+    const owned = { ...activePack, status: 'superseded' };
+    const tx = {
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: owned.id, companionId: owned.companionId, status: 'deleting' }), updateMany: jest.fn() },
+      networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ activeAssetPackId: 'other-pack' }), update: jest.fn() },
+    };
+    const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(owned) }, $transaction: jest.fn((operation) => operation(tx)) };
+    const service = new CompanionService(prisma as never, {} as never, {} as never);
+
+    await expect(service.activateAssetPack('user-1', owned.id)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_PACK_STATE_CHANGED' }) });
+    expect(tx.companionAssetPack.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reactivates superseded packs with a transactional compare-and-swap claim', async () => {
+    const owned = { ...activePack, status: 'superseded' };
+    const publicCompanion = { id: owned.companionId, ownerUserId: 'user-1', name: 'Ann', publicDescription: null, publicTags: [], visibility: 'friends_only', published: false, activeAssetPackId: owned.id, createdAt: now, updatedAt: now, publishedAt: null };
+    const tx = {
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: owned.id, companionId: owned.companionId, status: 'superseded' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ activeAssetPackId: 'other-pack' }), update: jest.fn().mockResolvedValue(publicCompanion) },
+    };
+    const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(owned) }, friendship: { findMany: jest.fn().mockResolvedValue([]) }, $transaction: jest.fn((operation) => operation(tx)) };
+    const service = new CompanionService(prisma as never, {} as never, { publishToUser: jest.fn() } as never);
+
+    await expect(service.activateAssetPack('user-1', owned.id)).resolves.toMatchObject({ id: owned.companionId, activeAssetPackId: owned.id });
+    expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: expect.objectContaining({ id: owned.id, status: 'superseded' }), data: expect.objectContaining({ status: 'active' }) }));
+  });
+
+  it('does not let Complete revive an upload cleanup claim to abandoning', async () => {
+    const uploading = uploadPack('uploading');
+    const abandoning = uploadPack('abandoning');
+    const headObject = jest.fn();
+    const prisma = {
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValueOnce(uploading).mockResolvedValueOnce(abandoning), updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    };
+    const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { uploadSessionTtlHours: 24 }, headObject } as never, {} as never);
+
+    await expect(service.completeAssetPack('user-1', uploading.id)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_PACK_STATE_CHANGED' }) });
+    expect(prisma.companionAssetPack.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: uploading.id, status: 'uploading' } }));
+    expect(headObject).not.toHaveBeenCalled();
+  });
+
+  it('rejects Complete immediately for an already abandoning pack', async () => {
+    const abandoning = uploadPack('abandoning');
+    const updateMany = jest.fn();
+    const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(abandoning), updateMany } };
+    const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { uploadSessionTtlHours: 24 } } as never, {} as never);
+
+    await expect(service.completeAssetPack('user-1', abandoning.id)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_PACK_NOT_UPLOADABLE' }) });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('claims uploading to verifying before verification and activates only with a verifying CAS', async () => {
+    const uploading = uploadPack('uploading');
+    const verifying = uploadPack('verifying');
+    const publicCompanion = { id: verifying.companionId, ownerUserId: 'user-1', name: 'Ann', publicDescription: null, publicTags: [], visibility: 'friends_only', published: false, activeAssetPackId: verifying.id, createdAt: now, updatedAt: now, publishedAt: null };
+    const tx = {
+      companionAssetPack: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      companionAssetFile: { updateMany: jest.fn().mockResolvedValue({ count: 3 }) },
+      networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ activeAssetPackId: null }), update: jest.fn().mockResolvedValue(publicCompanion) },
+    };
+    const prisma = {
+      companionAssetPack: {
+        findUnique: jest.fn().mockResolvedValueOnce(uploading).mockResolvedValueOnce(verifying),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ ...verifying, status: 'active' }),
+      },
+      friendship: { findMany: jest.fn().mockResolvedValue([]) },
+      $transaction: jest.fn((operation) => operation(tx)),
+    };
+    const storage = {
+      capability: { uploadsEnabled: true }, limits: { uploadSessionTtlHours: 24, maxFileBytes: 10, maxPackBytes: 10, maxPackFiles: 10 },
+      headObject: jest.fn().mockResolvedValue({ sizeBytes: 1, mimeType: 'image/png', sha256: 'a'.repeat(64) }), putManifest: jest.fn(),
+    };
+    const service = new CompanionService(prisma as never, storage as never, { publishToUser: jest.fn() } as never);
+
+    await expect(service.completeAssetPack('user-1', uploading.id)).resolves.toMatchObject({ assetPack: { id: uploading.id }, companion: { id: verifying.companionId } });
+    expect(prisma.companionAssetPack.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { id: uploading.id, status: 'uploading' }, data: expect.objectContaining({ status: 'verifying' }) }));
+    expect(tx.companionAssetPack.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: verifying.id, status: 'verifying' }), data: expect.objectContaining({ status: 'active' }) }));
+  });
+
+  it('does not claim a recently started verification for abandonment cleanup', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new CompanionService({ companionAssetPack: { findMany } } as never, { capability: { uploadsEnabled: true }, limits: { uploadSessionTtlHours: 24 } } as never, {} as never);
+
+    await service.abandonExpiredUploads();
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ status: 'verifying', updatedAt: expect.anything() })]) })]) }) }));
   });
 });

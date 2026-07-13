@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import 'dotenv/config';
 import { StorageService } from './storage.service';
 
 const enabled = process.env.RUN_R2_INTEGRATION === '1';
