@@ -17,4 +17,16 @@ describe('SocialRateLimitGuard', () => {
     reflector.getAllAndOverride.mockReturnValue('friend_request_create');
     expect(guard.canActivate(contextFor('user-a', 'friend_request_create'))).toBe(true);
   });
+
+  it('removes expired policy entries instead of retaining old limiter keys', () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-13T00:00:00.000Z'));
+    const reflector = { getAllAndOverride: jest.fn().mockReturnValue('lookup') };
+    const guard = new SocialRateLimitGuard(reflector as never);
+    guard.canActivate(contextFor('expired-user', 'lookup'));
+    jest.advanceTimersByTime(60_001);
+    guard.canActivate(contextFor('current-user', 'lookup'));
+    expect((guard as any).attempts.has('expired-user:lookup')).toBe(false);
+    jest.useRealTimers();
+  });
 });

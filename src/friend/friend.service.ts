@@ -146,24 +146,32 @@ export class FriendService {
       throw new ConflictException({ code: 'FRIEND_REQUEST_NOT_PENDING', message: 'Friend request is not pending' });
     }
 
-    await this.prisma.$transaction([
-      this.prisma.friendRequest.update({
-        where: { id: requestId },
-        data: { status: 'accepted' },
-      }),
-      this.prisma.friendship.create({
-        data: {
-          userId: request.senderId,
-          friendId: request.receiverId,
-        },
-      }),
-      this.prisma.friendship.create({
-        data: {
-          userId: request.receiverId,
-          friendId: request.senderId,
-        },
-      }),
-    ]);
+    try {
+      await this.prisma.$transaction([
+        this.prisma.friendRequest.update({
+          where: { id: requestId },
+          data: { status: 'accepted' },
+        }),
+        this.prisma.friendship.create({
+          data: {
+            userId: request.senderId,
+            friendId: request.receiverId,
+          },
+        }),
+        this.prisma.friendship.create({
+          data: {
+            userId: request.receiverId,
+            friendId: request.senderId,
+          },
+        }),
+      ]);
+    } catch (error) {
+      // A parallel acceptance can race after both requests observed pending. Keep the API stable.
+      if ((error as { code?: string }).code === 'P2002') {
+        throw new ConflictException({ code: 'FRIENDSHIP_ALREADY_EXISTS', message: 'Friendship already exists' });
+      }
+      throw error;
+    }
 
     this.events.publishToUser(request.senderId, 'friend.request.updated', { requestId, status: 'accepted' });
     this.events.publishToUser(request.receiverId, 'friend.request.updated', { requestId, status: 'accepted' });
