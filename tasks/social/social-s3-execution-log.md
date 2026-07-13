@@ -19,3 +19,9 @@
 ## Manual verification
 
 - Two-client desktop smoke test passed: the owner and friend completed the online publish/download flow successfully on separate devices. No credentials, tokens, signed URLs, keys, or local paths are recorded here.
+
+## Follow-up social polish
+
+- `01c191b` returns `hasPublishedCompanion` with each friend. It is true only for the friend’s active `friends_only` Companion with a published asset pack; the protected Companion endpoint remains the final authorization check.
+- Friend Code has a database uniqueness constraint and registration now retries a rare Friend Code collision before creating the account.
+- Current full Network unit regression: 9 suites passed / 40 tests passed; the opt-in R2 integration suite remains skipped in the ordinary run.
