@@ -1,7 +1,7 @@
 # Social S2 execution log
 
 - Previous baseline: `6f03fb020eb6b11795984c7ca63db4ed5ed03e73`.
-- Closure-repair commit: pending at log update.
+- Closure-repair commit: `655fda66b83f3a99e3bb279f5ee01457f04767dc`.
 - Files changed: Social limiter metadata/guard, Friend and Block controllers/DTO/service, Presence service/gateway/contract documentation, and focused server tests.
 - Rate-limit policy: read `120/min`, lookup `30/min`, friend-request create `10/hour`, ordinary request mutation `60/hour`, and block/remove mutations `30/hour`, keyed independently per authenticated user/policy. Expired timestamps and empty keys are removed; the map stays capped at 10,000 keys.
 - DTO and rule updates: UUID pipes validate route IDs; request DTO validates receiver UUID; Friend Code is trimmed, uppercased, fixed-length/alphanumeric validated before indexed lookup; terminal request reopen refreshes `updatedAt`; pending lists order by latest activity.
