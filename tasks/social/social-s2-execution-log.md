@@ -2,18 +2,19 @@
 
 - Previous baseline: `6f03fb020eb6b11795984c7ca63db4ed5ed03e73`.
 - Closure-repair commit: `655fda66b83f3a99e3bb279f5ee01457f04767dc`.
+- Follow-up multiple-device aggregation repair: `a63619d642a55903c5c1120f3413ca7e1857c2a5`.
 - Files changed: Social limiter metadata/guard, Friend and Block controllers/DTO/service, Presence service/gateway/contract documentation, and focused server tests.
 - Rate-limit policy: read `120/min`, lookup `30/min`, friend-request create `10/hour`, ordinary request mutation `60/hour`, and block/remove mutations `30/hour`, keyed independently per authenticated user/policy. Expired timestamps and empty keys are removed; the map stays capped at 10,000 keys.
 - DTO and rule updates: UUID pipes validate route IDs; request DTO validates receiver UUID; Friend Code is trimmed, uppercased, fixed-length/alphanumeric validated before indexed lookup; terminal request reopen refreshes `updatedAt`; pending lists order by latest activity.
 - Presence restart recovery: `PresenceService.onModuleInit` marks persisted `online`/`idle` records offline as the documented single-instance MVP recovery. Horizontal scaling still requires a lease/shared coordinator.
-- Multiple-device aggregation: every authenticated connection is active and publishes online. Idle is calculated from each socket activity timestamp; disconnecting one socket recalculates remaining sockets; offline grace starts only after the final socket disconnects.
+- Multiple-device aggregation: every authenticated connection is active and publishes online. Idle is calculated from each socket activity timestamp; only future active-socket expiry times schedule the next evaluation, so an already-idle device cannot spin a zero-delay timer while another is active. Disconnecting one socket recalculates remaining sockets; offline grace starts only after the final socket disconnects.
 - REST contract: Friend Presence snapshots explicitly return `{ userId, status, updatedAt }`; raw Prisma entities and `lastSeenAt` variations no longer leak through the contract.
-- Tests added: read-rate policy isolation, startup recovery, normalized Presence response, plus terminal-request timestamp expectation. Server unit suite: 10/10 passing.
+- Tests added: read-rate policy isolation, startup recovery, normalized Presence response, terminal-request timestamp expectation, and fake-timer multi-device aggregation (idle/active/connect/disconnect). Server unit suite: 14/14 passing.
 - Commands executed:
   - `npm run prisma:generate` — passed.
   - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/our_companion_test npx prisma validate` — passed.
   - `npm run build` — passed.
-  - `npm test -- --runInBand` — passed (5 suites, 10 tests).
+  - `npm test -- --runInBand` — passed (6 suites, 14 tests).
   - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/our_companion_test npm run test:e2e` — passed (1 suite, 1 test).
   - `git diff --check` — passed.
 - Scripted Social lifecycle against real PostgreSQL: pending; no PostgreSQL service was available in this environment.
