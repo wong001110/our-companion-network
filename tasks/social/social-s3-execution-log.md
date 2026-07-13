@@ -44,3 +44,22 @@
 - Live private R2 integration: 1 suite / 1 test passed (private upload, HEAD metadata, download/hash, manifest write, deletion, and cleanup).
 - The prior two-client S3 smoke test remains valid; no Client protocol or runtime code changed here.
 - S4 and S5 remain deferred.
+
+## Single active Asset Pack final closure
+
+- Previous reviewed baseline: `5bd7abb80f0157a1d30312daf7333833234a08c9`.
+- Implementation commit: `7b499cfa21a94afbbb30d22a053c1ab5bdf18e4f`.
+- Migration: `20260713100000_s3_one_active_asset_pack_per_companion` creates the PostgreSQL partial unique index `CompanionAssetPack_one_active_per_companion` on active Pack rows per Companion.
+- Before creating the index, the migration keeps the pointer-preferred active Pack, supersedes duplicate active rows, repairs pointers to the selected active Pack, and clears pointers with no active Pack.
+- Both Complete and manual activation use the shared transactional activation helper. It locks the `NetworkCompanion` row with `FOR UPDATE`, supersedes every other active Pack, conditionally activates the target, and then writes the authoritative pointer.
+- Active-Pack reuse now checks the Companion pointer. An orphan active Pack returns `requiresActivation: true` and activation repairs it under the same lock.
+- A partial-index unique conflict retries the locked activation once, then maps a repeated conflict to `ASSET_PACK_STATE_CHANGED`.
+
+## Single active Asset Pack verification
+
+- Focused Companion lifecycle suite: 1 suite / 14 tests passed, including shared-lock, orphan-repair, cleanup, and unique-conflict cases.
+- PostgreSQL migration/invariant integration: 1 suite / 1 test passed using transaction-local temporary tables. It executed the real migration SQL, normalized duplicate active rows and invalid pointers, rejected a second active Pack for the same Companion, and allowed another Companion’s Pack.
+- Full Network unit suite: 9 suites passed / 54 tests passed; 2 opt-in integrations skipped in the ordinary run.
+- E2E meta contract: 1 suite / 1 test passed.
+- Live private R2 integration: 1 suite / 1 test passed (private upload, metadata HEAD, download/hash, manifest write, and cleanup).
+- Invariant confirmed: each Companion has zero or one active Asset Pack, and the pointer matches that Pack. The existing two-client S3 smoke test remains valid. S4 and S5 remain deferred.
