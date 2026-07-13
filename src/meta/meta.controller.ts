@@ -29,6 +29,7 @@ export class MetaController {
       compatible: result.compatible,
       protocolVersion: this.protocolConfig.protocolVersion,
       minimumClientVersion: this.protocolConfig.minimumClientVersion,
+      features: this.protocolConfig.features,
       reason: result.reason,
     };
   }
