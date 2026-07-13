@@ -16,5 +16,5 @@
 - Invitation snapshots are loaded inside the participant/Companion/Pack lock transaction. Participant row locking is deterministic and a new opt-in PostgreSQL concurrency test uses two Prisma connections to exercise overlapping accept attempts.
 - Heartbeat timeout fallback uses lifecycle timestamps instead of treating a missing first heartbeat as epoch zero. Visit list filters and asset file-ID payloads are validated. Visit capability flags are disabled when asset storage is unavailable.
 - Verification passed: Prisma generation and validation, Network build, Network unit suite (64 tests), HTTP E2E suite (3 tests), and live private-R2 integration (1 test; isolated objects removed).
-- PostgreSQL migration/concurrency integration could not run in this environment because `localhost:5432` was not accepting connections. The tests remain opt-in behind `RUN_POSTGRES_INTEGRATION=1` and must run against an available PostgreSQL instance before a fully database-verified closure.
+- PostgreSQL migration and separate-connection concurrency integration passed with `RUN_POSTGRES_INTEGRATION=1` (3 tests). They create isolated schemas and remove them after verification.
 - Two-client S4 smoke test: passed (reported by the tester). No S5 visual Visit work was started.
