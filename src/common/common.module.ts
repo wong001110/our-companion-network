@@ -7,6 +7,7 @@ import { SocketAuthService } from './socket-auth.service';
 import { ProtocolConfigService } from './protocol-config.service';
 import { SocialEventPublisher } from './social-event-publisher.service';
 import { SocialRateLimitGuard } from './guards/social-rate-limit.guard';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SocialRateLimitGuard } from './guards/social-rate-limit.guard';
       inject: [ConfigService],
     }),
     PassportModule,
+    StorageModule,
   ],
   providers: [JwtStrategy, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard],
   exports: [JwtModule, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard],

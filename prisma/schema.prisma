@@ -29,6 +29,9 @@ model User {
   blockedUsers     BlockedUser[] @relation("Blocker")
   blockedBy        BlockedUser[] @relation("Blocked")
   discoveries      Discovery[]
+  networkCompanions NetworkCompanion[] @relation("OwnedNetworkCompanions")
+  activeNetworkCompanionId String? @unique
+  activeNetworkCompanion NetworkCompanion? @relation("UserActiveNetworkCompanion", fields: [activeNetworkCompanionId], references: [id])
 }
 
 model DeviceSession {
@@ -135,4 +138,64 @@ model Discovery {
   description String?
   metadata    Json
   createdAt   DateTime @default(now())
+}
+
+model NetworkCompanion {
+  id                String   @id @default(uuid())
+  ownerUserId       String
+  owner             User     @relation("OwnedNetworkCompanions", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  name              String
+  publicDescription String?
+  publicTags        String[] @default([])
+  visibility        String   @default("friends_only")
+  published         Boolean  @default(false)
+  activeAssetPackId String?  @unique
+  activeAssetPack   CompanionAssetPack? @relation("ActiveAssetPack", fields: [activeAssetPackId], references: [id])
+  activeForUser     User?    @relation("UserActiveNetworkCompanion")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  publishedAt       DateTime?
+  assetPacks        CompanionAssetPack[] @relation("CompanionAssetPacks")
+
+  @@index([ownerUserId])
+}
+
+model CompanionAssetPack {
+  id               String   @id @default(uuid())
+  companionId      String
+  companion        NetworkCompanion @relation("CompanionAssetPacks", fields: [companionId], references: [id], onDelete: Cascade)
+  manifestHash     String
+  schemaVersion    Int
+  manifest         Json
+  status           String
+  objectPrefix     String
+  totalFiles       Int
+  totalBytes       BigInt
+  failureCode      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  completedAt      DateTime?
+  activatedAt      DateTime?
+  supersededAt     DateTime?
+  files            CompanionAssetFile[]
+  activeForCompanion NetworkCompanion? @relation("ActiveAssetPack")
+
+  @@unique([companionId, manifestHash])
+  @@index([companionId, status])
+}
+
+model CompanionAssetFile {
+  id           String   @id @default(uuid())
+  assetPackId  String
+  assetPack    CompanionAssetPack @relation(fields: [assetPackId], references: [id], onDelete: Cascade)
+  relativePath String
+  objectKey    String   @unique
+  mimeType     String
+  sizeBytes    BigInt
+  sha256       String
+  category     String
+  uploaded     Boolean  @default(false)
+  verifiedAt   DateTime?
+
+  @@unique([assetPackId, relativePath])
 }

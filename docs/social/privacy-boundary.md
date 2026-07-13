@@ -1,5 +1,3 @@
-# Privacy boundary
+# S3 privacy boundary
 
-The desktop client keeps AI keys, full personality values, memories, chat history, diary, private discoveries, local file paths, runtime state, prompts, permissions, and user files local. The Network Server never stores, proxies, or logs AI keys. Future visitor AI requests are relayed to the owner device; they are never executed by the server or host device.
-
-S1 uploads only account credentials, a random installation device ID, protocol metadata, and authenticated connection state. The device ID is random and contains no hardware, username, MAC address, or path.
+Profiles are network-safe, not public: visibility is always friends-only. The server never receives local Companion IDs, local paths, AI keys, prompts, memories, diaries, conversations, personality values, device state or desktop permissions. Unpublishing prevents future profile/download authorization but does not revoke an already-issued short-lived GET URL or delete a friend's prior cache; later S4/S5 work must re-check authorization.

@@ -8,6 +8,11 @@ const POLICIES: Record<SocialRateLimitPolicy, { windowMs: number; limit: number 
   friend_request_create: { windowMs: 3_600_000, limit: 10 },
   mutation: { windowMs: 3_600_000, limit: 60 },
   block_mutation: { windowMs: 3_600_000, limit: 30 },
+  companion_profile: { windowMs: 3_600_000, limit: 30 },
+  asset_initiate: { windowMs: 3_600_000, limit: 10 },
+  asset_upload_urls: { windowMs: 60_000, limit: 120 },
+  asset_complete: { windowMs: 3_600_000, limit: 20 },
+  asset_download_urls: { windowMs: 60_000, limit: 120 },
 };
 
 @Injectable()

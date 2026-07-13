@@ -18,6 +18,7 @@ export class MetaController {
       minimumClientVersion: this.protocolConfig.minimumClientVersion,
       serverVersion: this.protocolConfig.serverVersion,
       features: this.protocolConfig.features,
+      storage: this.protocolConfig.storageCapability,
     };
   }
 
