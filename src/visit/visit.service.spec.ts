@@ -17,7 +17,7 @@ function session(state = 'preparing') {
 }
 function service(prisma: Record<string, unknown> = {}) {
   const storage = { capability: { uploadsEnabled: true, downloadsEnabled: true }, createGetUrl: jest.fn() };
-  const config = { get: jest.fn((_key: string, fallback: string) => fallback) };
+  const config = { limits: { invitationTtlHours: 24, preparationTtlMinutes: 10, sessionMaxMinutes: 30, heartbeatIntervalSeconds: 15, heartbeatTimeoutSeconds: 60 } };
   const events = { publishToUser: jest.fn() };
   return { instance: new VisitService(prisma as never, storage as never, config as never, events as never), storage, events };
 }

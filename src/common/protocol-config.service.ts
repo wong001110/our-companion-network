@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StorageCapability, StorageService } from '../storage/storage.service';
+import { VisitConfigService } from './visit-config.service';
 
 @Injectable()
 export class ProtocolConfigService {
@@ -17,7 +18,7 @@ export class ProtocolConfigService {
     visualVisits: false,
   } as const;
 
-  constructor(config: ConfigService, private readonly storage?: StorageService) {
+  constructor(config: ConfigService, private readonly storage?: StorageService, private readonly visits: VisitConfigService = new VisitConfigService(config)) {
     this.protocolVersion = config.get<string>('PROTOCOL_VERSION', '0.3');
     this.minimumClientVersion = config.get<string>('MINIMUM_CLIENT_VERSION', '0.3.0');
     this.serverVersion = config.get<string>('SERVER_VERSION', '0.3.0');
@@ -30,6 +31,11 @@ export class ProtocolConfigService {
   get features() {
     const enabled = this.storageCapability.uploadsEnabled && this.storageCapability.downloadsEnabled;
     return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled, visitInvitations: enabled, visitSessions: enabled } as const;
+  }
+
+  get visitRuntimeConfig() {
+    const limits = this.visits.limits;
+    return { heartbeatIntervalSeconds: limits.heartbeatIntervalSeconds, heartbeatTimeoutSeconds: limits.heartbeatTimeoutSeconds };
   }
 
   isCompatible(clientVersion?: string, protocolVersion?: string): { compatible: boolean; reason?: string } {

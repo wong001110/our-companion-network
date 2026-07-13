@@ -1,9 +1,9 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
+import { VisitConfigService } from '../common/visit-config.service';
 
 const PENDING = 'pending';
 const INVITATION_TERMINAL = ['accepted', 'declined', 'cancelled', 'expired'];
@@ -21,7 +21,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
-    private readonly config: ConfigService,
+    private readonly visitConfig: VisitConfigService,
     private readonly events: SocialEventPublisher,
   ) {}
 
@@ -314,8 +314,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     if ((session.visitorOwnerSeenAt ?? fallback).getTime() < threshold || (session.hostSeenAt ?? fallback).getTime() < threshold) return 'heartbeat_timeout';
     return undefined;
   }
-  private get limits() { const heartbeatIntervalSeconds = this.positive('VISIT_HEARTBEAT_INTERVAL_SECONDS', 15, 5, 60); const configuredTimeout = this.positive('VISIT_HEARTBEAT_TIMEOUT_SECONDS', 60, 6, 300); return { invitationTtlHours: this.positive('VISIT_INVITATION_TTL_HOURS', 24, 1, 168), preparationTtlMinutes: this.positive('VISIT_PREPARATION_TTL_MINUTES', 10, 1, 60), sessionMaxMinutes: this.positive('VISIT_SESSION_MAX_MINUTES', 30, 5, 240), heartbeatIntervalSeconds, heartbeatTimeoutSeconds: configuredTimeout > heartbeatIntervalSeconds ? configuredTimeout : 60 }; }
-  private positive(key: string, fallback: number, min: number, max: number) { const value = Number(this.config.get<string>(key, String(fallback))); return Number.isFinite(value) && Number.isInteger(value) && value >= min && value <= max ? value : fallback; }
+  private get limits() { return this.visitConfig.limits; }
   private requireFeature() { if (!this.storage.capability.uploadsEnabled || !this.storage.capability.downloadsEnabled) throw new ServiceUnavailableException({ code: 'VISIT_FEATURE_UNAVAILABLE', message: 'Visit feature is unavailable' }); }
   private notAvailable(): never { throw new ConflictException({ code: 'VISIT_INVITATION_NOT_AVAILABLE', message: 'Visit invitation is not available' }); }
   private assetNotAvailable(): never { throw new NotFoundException({ code: 'VISIT_ASSET_NOT_AVAILABLE', message: 'Visit Asset Pack is not available' }); }

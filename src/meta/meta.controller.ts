@@ -30,6 +30,7 @@ export class MetaController {
       protocolVersion: this.protocolConfig.protocolVersion,
       minimumClientVersion: this.protocolConfig.minimumClientVersion,
       features: this.protocolConfig.features,
+      visit: this.protocolConfig.features.visitSessions ? this.protocolConfig.visitRuntimeConfig : undefined,
       reason: result.reason,
     };
   }

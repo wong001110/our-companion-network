@@ -18,3 +18,14 @@
 - Verification passed: Prisma generation and validation, Network build, Network unit suite (64 tests), HTTP E2E suite (3 tests), and live private-R2 integration (1 test; isolated objects removed).
 - PostgreSQL migration and separate-connection concurrency integration passed with `RUN_POSTGRES_INTEGRATION=1` (3 tests). They create isolated schemas and remove them after verification.
 - Two-client S4 smoke test: passed (reported by the tester). No S5 visual Visit work was started.
+
+## S4 heartbeat configuration closure (2026-07-14)
+
+- Previous reviewed baseline: `39b1e483bde555d7bfe6cc03adc890d6fca2eb69`.
+- Authoritative heartbeat configuration is `VisitConfigService`; both `VisitService` timeout cleanup and compatibility metadata read the same validated limits.
+- Compatibility now returns the additive sanitized `visit` runtime object only while Visit capability is enabled: `heartbeatIntervalSeconds` and `heartbeatTimeoutSeconds`.
+- Effective timeout formula: `max(30, configuredTimeout, interval * 2, interval + 5)`. This protects existing protocol 0.3 clients that still send a fixed 15-second cadence.
+- Defaults are 15-second interval and 60-second timeout. Invalid values fall back safely; low configured values are clamped to the formula.
+- `.env.example` documents the public cadence and effective timeout rule without exposing private configuration.
+- Focused heartbeat/config tests passed (22 tests); full Network unit suite passed (76 tests), HTTP E2E passed (3 tests), PostgreSQL integration passed (3 tests), and live R2 integration passed (1 test).
+- Remaining manual verification: two-client default, custom 5/30-second, and reconnect heartbeat smoke tests.

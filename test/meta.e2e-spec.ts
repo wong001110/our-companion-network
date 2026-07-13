@@ -4,11 +4,12 @@ import { Test } from '@nestjs/testing';
 import { MetaController } from '../src/meta/meta.controller';
 import { ProtocolConfigService } from '../src/common/protocol-config.service';
 import { StorageModule } from '../src/storage/storage.module';
+import { VisitConfigService } from '../src/common/visit-config.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => ({ PROTOCOL_VERSION: '0.3', MINIMUM_CLIENT_VERSION: '0.3.0', SERVER_VERSION: '0.3.0' })] }), StorageModule],
   controllers: [MetaController],
-  providers: [ProtocolConfigService],
+  providers: [ProtocolConfigService, VisitConfigService],
 })
 class MetaE2eModule {}
 
@@ -37,6 +38,8 @@ describe('Meta HTTP contract (e2e)', () => {
       'x-our-companion-protocol-version': '0.3',
     } });
     expect(compatibility.status).toBe(200);
-    expect(await compatibility.json()).toMatchObject({ compatible: false, reason: 'CLIENT_VERSION_TOO_OLD' });
+    const payload = await compatibility.json();
+    expect(payload).toMatchObject({ compatible: false, reason: 'CLIENT_VERSION_TOO_OLD', features: { visitSessions: false } });
+    expect(payload.visit).toBeUndefined();
   });
 });

@@ -1,4 +1,5 @@
 import { ProtocolConfigService } from './protocol-config.service';
+import { VisitConfigService } from './visit-config.service';
 
 describe('ProtocolConfigService', () => {
   const config = (values: Record<string, string> = {}) => ({ get: jest.fn((key: string, fallback: string) => values[key] ?? fallback) });
@@ -15,5 +16,12 @@ describe('ProtocolConfigService', () => {
   it('does not advertise Visit endpoints when R2 transfers are unavailable', () => {
     const service = new ProtocolConfigService(config() as never, { capability: { configured: false, provider: 'cloudflare_r2', uploadsEnabled: false, downloadsEnabled: false } } as never);
     expect(service.features).toMatchObject({ publicCompanions: false, assetPacks: false, visitInvitations: false, visitSessions: false });
+  });
+
+  it('exposes the same safe Visit runtime limits used by VisitService', () => {
+    const values = { VISIT_HEARTBEAT_INTERVAL_SECONDS: '5', VISIT_HEARTBEAT_TIMEOUT_SECONDS: '6' };
+    const runtime = new VisitConfigService(config(values) as never);
+    const protocol = new ProtocolConfigService(config(values) as never, undefined, runtime);
+    expect(protocol.visitRuntimeConfig).toEqual(runtime.limits && { heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 30 });
   });
 });
