@@ -106,10 +106,11 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     const existing = this.activityTimers.get(userId);
     if (existing) clearTimeout(existing);
     const idleMs = Math.max(1, Number(this.config.get<string>('PRESENCE_IDLE_SECONDS', '300'))) * 1000;
-    const activities = [...(this.userSockets.get(userId) ?? [])]
-      .map((socketId) => this.socketActivity.get(socketId) ?? 0);
-    if (!activities.length) return;
-    const nextEvaluationMs = Math.max(0, Math.min(...activities.map((activity) => activity + idleMs - Date.now())));
+    const expiryTimes = [...(this.userSockets.get(userId) ?? [])]
+      .map((socketId) => (this.socketActivity.get(socketId) ?? 0) + idleMs)
+      .filter((expiryTime) => expiryTime > Date.now());
+    if (!expiryTimes.length) return;
+    const nextEvaluationMs = Math.max(0, Math.min(...expiryTimes) - Date.now());
     const timer = setTimeout(() => {
       this.activityTimers.delete(userId);
       void this.publishAggregatePresence(userId).then(() => this.scheduleIdleCheck(userId));
