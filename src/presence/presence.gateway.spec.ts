@@ -62,4 +62,14 @@ describe('PresenceGateway multiple-device aggregation', () => {
     expect(presence.setOnline).toHaveBeenLastCalledWith('user-a');
     expect(presence.setOffline).not.toHaveBeenCalled();
   });
+
+  it('publishes offline immediately after the last device closes by default', async () => {
+    const { gateway, presence } = createGateway();
+    const device = socket('a');
+    await gateway.handleConnection(device);
+
+    await gateway.handleDisconnect(device);
+
+    expect(presence.setOffline).toHaveBeenLastCalledWith('user-a');
+  });
 });

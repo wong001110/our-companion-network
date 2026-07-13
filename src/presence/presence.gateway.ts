@@ -75,7 +75,14 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       clearTimeout(idleTimer);
       this.activityTimers.delete(userId);
     }
-    const graceSeconds = Number(this.config.get<string>('PRESENCE_DISCONNECT_GRACE_SECONDS', '45'));
+    // A normal app close is a deliberate disconnect, so friends should see the
+    // user as offline without a delay. Deployments may still opt into a grace
+    // period when transient-disconnect smoothing is more important.
+    const graceSeconds = Number(this.config.get<string>('PRESENCE_DISCONNECT_GRACE_SECONDS', '0'));
+    if (!Number.isFinite(graceSeconds) || graceSeconds <= 0) {
+      await this.publishPresence(userId, 'offline');
+      return;
+    }
     const timer = setTimeout(() => {
       this.offlineTimers.delete(userId);
       if (!this.userSockets.has(userId)) void this.publishPresence(userId, 'offline');
