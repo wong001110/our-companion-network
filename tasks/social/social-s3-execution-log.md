@@ -25,3 +25,22 @@
 - `01c191b` returns `hasPublishedCompanion` with each friend. It is true only for the friend’s active `friends_only` Companion with a published asset pack; the protected Companion endpoint remains the final authorization check.
 - Friend Code has a database uniqueness constraint and registration now retries a rare Friend Code collision before creating the account.
 - Current full Network unit regression: 9 suites passed / 40 tests passed; the opt-in R2 integration suite remains skipped in the ordinary run.
+
+## Final concurrency and Presence repair
+
+- Previous reviewed baseline: `0982e8be199a35e4a5690861b01f682725e86bed`.
+- Implementation commit: `10ef2c761153162307880840bd72401b1ec450f2`.
+- Asset Pack activation re-reads the Pack inside its transaction. Only `superseded → active` can claim with `updateMany`; an already-current active Pack is idempotent, while `deleting` and every other non-eligible state return `ASSET_PACK_STATE_CHANGED`.
+- Completion claims `uploading → verifying` with compare-and-swap and refreshes the verification timestamp. Final activation separately claims `verifying → active`, so cleanup cannot revive or activate an `abandoning` Pack.
+- Expired-upload cleanup uses `createdAt` for uploading Packs and `updatedAt` for verifying Packs; a freshly claimed verification is not considered stale. Existing cleanup claim rules remain `superseded → deleting` and stale upload `→ abandoning`.
+- Presence disconnect grace is restored to a safe default of 45 seconds. `0` remains an explicit immediate-offline setting; invalid values safely fall back to 45 seconds. `.env.example` documents both choices.
+
+## Final verification
+
+- Focused lifecycle and Presence suites: 2 suites / 19 tests passed.
+- Prisma generation and schema validation passed.
+- Full unit suite: 9 suites passed / 51 tests passed; the opt-in R2 suite is skipped in the ordinary run.
+- E2E meta contract: 1 suite / 1 test passed.
+- Live private R2 integration: 1 suite / 1 test passed (private upload, HEAD metadata, download/hash, manifest write, deletion, and cleanup).
+- The prior two-client S3 smoke test remains valid; no Client protocol or runtime code changed here.
+- S4 and S5 remain deferred.
