@@ -37,11 +37,11 @@ export class CompanionService {
   async activate(userId: string, companionId: string) {
     const companion = await this.requireOwnedCompanion(userId, companionId);
     if (companion.id === (await this.prisma.user.findUnique({ where: { id: userId }, select: { activeNetworkCompanionId: true } }))?.activeNetworkCompanionId) {
-      throw new ConflictException({ code: 'COMPANION_ALREADY_ACTIVE', message: 'This Companion is already active' });
+      return { activeNetworkCompanionId: companionId, changed: false };
     }
     await this.prisma.user.update({ where: { id: userId }, data: { activeNetworkCompanionId: companionId } });
     await this.publishInvalidation(userId, 'companion.profile.updated', { ownerUserId: userId, companionId });
-    return { activeNetworkCompanionId: companionId };
+    return { activeNetworkCompanionId: companionId, changed: true };
   }
 
   async publish(userId: string, companionId: string) {
@@ -76,7 +76,15 @@ export class CompanionService {
     }
     const existing = await this.prisma.companionAssetPack.findUnique({ where: { companionId_manifestHash: { companionId, manifestHash: dto.manifestHash } }, select: PACK_SELECT });
     if (existing) {
-      if (existing.status === 'active') return { reused: true, assetPack: this.pack(existing) };
+      if (existing.status === 'active' || existing.status === 'superseded') return { reused: true, requiresActivation: existing.status === 'superseded', assetPack: this.pack(existing) };
+      if (existing.status === 'uploading' || existing.status === 'verifying') {
+        this.assertUploadSessionCurrent(existing);
+        const resumed = existing.status === 'verifying'
+          ? await this.prisma.companionAssetPack.update({ where: { id: existing.id }, data: { status: 'uploading', failureCode: null }, select: PACK_SELECT })
+          : existing;
+        const files = await this.prisma.companionAssetFile.findMany({ where: { assetPackId: existing.id }, select: { id: true } });
+        return { reused: false, resumed: true, assetPack: this.pack(resumed), fileIds: files.map(file => file.id) };
+      }
       throw new ConflictException({ code: 'ASSET_PACK_ALREADY_EXISTS', message: 'An Asset Pack with this manifest already exists' });
     }
     const usage = await this.prisma.companionAssetPack.aggregate({ where: { companion: { ownerUserId: userId }, status: { in: ['uploading', 'verifying', 'active', 'superseded'] } }, _sum: { totalBytes: true } });
@@ -119,12 +127,16 @@ export class CompanionService {
     this.requireStorage();
     const pack = await this.requireOwnedPack(userId, assetPackId, true);
     if (pack.status === 'active') return this.pack(pack);
-    this.assertUploadable(pack);
-    const started = await this.prisma.companionAssetPack.update({ where: { id: assetPackId }, data: { status: 'verifying' }, include: { files: true, companion: true } });
+    if (!['uploading', 'verifying'].includes(pack.status)) throw new ConflictException({ code: 'ASSET_PACK_NOT_UPLOADABLE', message: 'Asset Pack cannot be completed' });
+    this.assertUploadSessionCurrent(pack);
+    const started = pack.status === 'verifying'
+      ? pack
+      : await this.prisma.companionAssetPack.update({ where: { id: assetPackId }, data: { status: 'verifying', failureCode: null }, include: { files: true, companion: true } });
     try {
       for (const file of started.files) {
         const metadata = await this.storage.headObject(file.objectKey);
-        if (!metadata || metadata.sizeBytes !== Number(file.sizeBytes) || metadata.mimeType !== file.mimeType || metadata.sha256 !== file.sha256) {
+        if (!metadata) throw new Error('ASSET_PACK_FILE_MISSING');
+        if (metadata.sizeBytes !== Number(file.sizeBytes) || metadata.mimeType !== file.mimeType || metadata.sha256 !== file.sha256) {
           throw new Error('ASSET_INTEGRITY_FAILED');
         }
       }
@@ -140,15 +152,26 @@ export class CompanionService {
       await this.publishInvalidation(userId, 'companion.asset_pack.activated', { ownerUserId: userId, companionId: started.companionId, assetPackId: started.id });
       return { assetPack: this.pack(await this.prisma.companionAssetPack.findUniqueOrThrow({ where: { id: assetPackId }, select: PACK_SELECT })), companion: this.publicProfile(result) };
     } catch (error) {
-      await this.prisma.companionAssetPack.update({ where: { id: assetPackId }, data: { status: 'failed', failureCode: error instanceof Error && error.message === 'ASSET_INTEGRITY_FAILED' ? 'ASSET_INTEGRITY_FAILED' : 'ASSET_PACK_FILE_MISSING' } });
-      throw new BadRequestException({ code: 'ASSET_INTEGRITY_FAILED', message: 'Uploaded Asset Pack could not be verified' });
+      if (error instanceof ServiceUnavailableException) throw error;
+      if (error instanceof Error && error.message === 'ASSET_INTEGRITY_FAILED') {
+        await this.prisma.companionAssetPack.update({ where: { id: assetPackId }, data: { status: 'failed', failureCode: 'ASSET_INTEGRITY_FAILED' } });
+        throw new BadRequestException({ code: 'ASSET_INTEGRITY_FAILED', message: 'Uploaded Asset Pack could not be verified' });
+      }
+      await this.prisma.companionAssetPack.update({ where: { id: assetPackId }, data: { status: 'verifying', failureCode: 'ASSET_VERIFICATION_RETRYABLE' } });
+      throw new ServiceUnavailableException({ code: 'ASSET_VERIFICATION_RETRYABLE', message: 'Asset verification can be retried shortly' });
     }
   }
 
   async activateAssetPack(userId: string, assetPackId: string) {
     const pack = await this.requireOwnedPack(userId, assetPackId, true);
-    if (pack.status !== 'active') throw new ConflictException({ code: 'ASSET_PACK_NOT_COMPLETE', message: 'Only verified Asset Packs can be activated' });
-    const companion = await this.prisma.networkCompanion.update({ where: { id: pack.companionId }, data: { activeAssetPackId: assetPackId }, select: PUBLIC_SELECT });
+    if (!['active', 'superseded'].includes(pack.status)) throw new ConflictException({ code: 'ASSET_PACK_NOT_COMPLETE', message: 'Only verified Asset Packs can be activated' });
+    const companion = await this.prisma.$transaction(async tx => {
+      const current = await tx.networkCompanion.findUniqueOrThrow({ where: { id: pack.companionId }, select: { activeAssetPackId: true } });
+      if (current.activeAssetPackId && current.activeAssetPackId !== pack.id) await tx.companionAssetPack.update({ where: { id: current.activeAssetPackId }, data: { status: 'superseded', supersededAt: new Date() } });
+      await tx.companionAssetPack.update({ where: { id: pack.id }, data: { status: 'active', activatedAt: new Date(), supersededAt: null, failureCode: null } });
+      return tx.networkCompanion.update({ where: { id: pack.companionId }, data: { activeAssetPackId: assetPackId }, select: PUBLIC_SELECT });
+    });
+    await this.publishInvalidation(userId, 'companion.asset_pack.activated', { ownerUserId: userId, companionId: pack.companionId, assetPackId });
     return this.publicProfile(companion);
   }
 
@@ -178,14 +201,28 @@ export class CompanionService {
     })) };
   }
 
-  async abandonExpiredUploads() {
+  async abandonExpiredUploads(limit = 100) {
     const before = new Date(Date.now() - this.storage.limits.uploadSessionTtlHours * 3_600_000);
-    const packs = await this.prisma.companionAssetPack.findMany({ where: { status: { in: ['uploading', 'verifying'] }, createdAt: { lt: before } }, include: { files: { select: { objectKey: true } } } });
+    const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { status: { in: ['uploading', 'verifying'] }, createdAt: { lt: before } }, include: { files: { select: { objectKey: true } } } });
     for (const pack of packs) {
-      if (this.storage.capability.uploadsEnabled) await this.storage.deleteObjects([...pack.files.map(file => file.objectKey), `${pack.objectPrefix}/manifest.json`]);
+      if (!this.storage.capability.uploadsEnabled) break;
+      await this.storage.deleteObjects([...pack.files.map(file => file.objectKey), `${pack.objectPrefix}/manifest.json`]);
       await this.prisma.companionAssetPack.update({ where: { id: pack.id }, data: { status: 'abandoned' } });
     }
     return packs.length;
+  }
+
+  async cleanupSupersededPacks(limit = 100) {
+    const before = new Date(Date.now() - 30 * 24 * 3_600_000);
+    const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { status: 'superseded', supersededAt: { lt: before } }, include: { files: { select: { objectKey: true } } } });
+    let removed = 0;
+    for (const pack of packs) {
+      if (!this.storage.capability.uploadsEnabled) break;
+      await this.storage.deleteObjects([...pack.files.map(file => file.objectKey), `${pack.objectPrefix}/manifest.json`]);
+      await this.prisma.companionAssetPack.delete({ where: { id: pack.id } });
+      removed++;
+    }
+    return removed;
   }
 
   private async requireOwnedCompanion(userId: string, companionId: string) {
@@ -210,9 +247,10 @@ export class CompanionService {
   }
 
   private assertUploadable(pack: { status: string; createdAt: Date }) {
-    if (Date.now() - pack.createdAt.getTime() > this.storage.limits.uploadSessionTtlHours * 3_600_000) throw new ConflictException({ code: 'ASSET_UPLOAD_SESSION_EXPIRED', message: 'Asset Pack upload session has expired' });
+    this.assertUploadSessionCurrent(pack);
     if (pack.status !== 'uploading') throw new ConflictException({ code: 'ASSET_PACK_NOT_UPLOADABLE', message: 'Asset Pack cannot accept uploads' });
   }
+  private assertUploadSessionCurrent(pack: { createdAt: Date }) { if (Date.now() - pack.createdAt.getTime() > this.storage.limits.uploadSessionTtlHours * 3_600_000) throw new ConflictException({ code: 'ASSET_UPLOAD_SESSION_EXPIRED', message: 'Asset Pack upload session has expired' }); }
   private requireStorage() { if (!this.storage.capability.uploadsEnabled) throw new ServiceUnavailableException({ code: 'ASSET_STORAGE_UNAVAILABLE', message: 'Asset storage is currently unavailable' }); }
   private normalizeProfile(dto: UpsertCompanionDto) {
     const name = dto.name?.trim();

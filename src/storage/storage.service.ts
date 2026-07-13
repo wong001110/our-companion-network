@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   DeleteObjectsCommand,
@@ -29,13 +29,14 @@ export interface PresignedObjectUrl {
 }
 
 @Injectable()
-export class StorageService implements OnModuleInit {
+export class StorageService implements OnModuleInit, OnModuleDestroy {
   private readonly client?: S3Client;
   private readonly bucket?: string;
   private readonly uploadTtlSeconds: number;
   private readonly downloadTtlSeconds: number;
   private readonly limitsValue: { maxFileBytes: number; maxPackBytes: number; maxPackFiles: number; uploadSessionTtlHours: number; maxUserStorageBytes: number };
   private _capability: StorageCapability;
+  private recoveryTimer?: NodeJS.Timeout;
 
   constructor(config: ConfigService) {
     const uploadTtlSeconds = configuredPositiveInt(config.get<string>('R2_UPLOAD_URL_TTL_SECONDS'), 900);
@@ -75,7 +76,14 @@ export class StorageService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    if (!this.client || !this.bucket) return;
+    await this.refreshCapability();
+    this.recoveryTimer = setInterval(() => void this.refreshCapability(), 5 * 60 * 1000);
+  }
+
+  onModuleDestroy() { if (this.recoveryTimer) clearInterval(this.recoveryTimer); }
+
+  async refreshCapability(): Promise<StorageCapability> {
+    if (!this.client || !this.bucket) return this.capability;
     try {
       await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
       this._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: true, downloadsEnabled: true };
@@ -83,6 +91,7 @@ export class StorageService implements OnModuleInit {
       // S0-S2 remain available when R2 is absent or temporarily unavailable.
       this._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: false, downloadsEnabled: false };
     }
+    return this.capability;
   }
 
   async createPutUrl(objectKey: string, mimeType: string, sha256: string): Promise<PresignedObjectUrl> {
@@ -108,19 +117,22 @@ export class StorageService implements OnModuleInit {
       return { sizeBytes: Number(result.ContentLength ?? 0), mimeType: result.ContentType, sha256: result.Metadata?.sha256 };
     } catch (error) {
       if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
+      this.markUnavailable();
       throw error;
     }
   }
 
   async putManifest(objectKey: string, body: string): Promise<void> {
     this.requireAvailable();
-    await this.client!.send(new PutObjectCommand({ Bucket: this.bucket!, Key: objectKey, Body: body, ContentType: 'application/json' }));
+    try { await this.client!.send(new PutObjectCommand({ Bucket: this.bucket!, Key: objectKey, Body: body, ContentType: 'application/json' })); }
+    catch (error) { this.markUnavailable(); throw error; }
   }
 
   async deleteObjects(objectKeys: string[]): Promise<void> {
     this.requireAvailable();
     if (!objectKeys.length) return;
-    await this.client!.send(new DeleteObjectsCommand({ Bucket: this.bucket!, Delete: { Objects: objectKeys.map(Key => ({ Key })), Quiet: true } }));
+    try { await this.client!.send(new DeleteObjectsCommand({ Bucket: this.bucket!, Delete: { Objects: objectKeys.map(Key => ({ Key })), Quiet: true } })); }
+    catch (error) { this.markUnavailable(); throw error; }
   }
 
   private requireAvailable() {
@@ -128,6 +140,7 @@ export class StorageService implements OnModuleInit {
       throw new ServiceUnavailableException({ code: 'ASSET_STORAGE_UNAVAILABLE', message: 'Asset storage is currently unavailable' });
     }
   }
+  private markUnavailable() { if (this._capability.configured) this._capability = { ...this._capability, uploadsEnabled: false, downloadsEnabled: false }; }
 }
 
 function validEndpoint(value: string): boolean {

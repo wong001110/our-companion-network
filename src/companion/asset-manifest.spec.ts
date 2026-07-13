@@ -5,7 +5,7 @@ const hash = (value: unknown) => createHash('sha256').update(canonicalJsonString
 const limits = { maxFileBytes: 100, maxPackBytes: 500, maxPackFiles: 10 };
 function manifest(): CompanionAssetManifestV1 {
   const files = ['Idle_Neutral', 'Enter', 'Leave'].map(name => ({ relativePath: `assets/animations/${name}.png`, category: 'animation' as const, mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64) }));
-  return { format: 'our-companion-asset-pack', schemaVersion: 1, runtime: { defaultAnimation: 'Idle_Neutral', animations: ['Leave', 'Enter', 'Idle_Neutral'].map(name => ({ name, format: 'sprite_sheet' as const, files: [`assets/animations/${name}.png`], loop: name === 'Idle_Neutral' })) }, files };
+  return { format: 'our-companion-asset-pack', schemaVersion: 1, runtime: { defaultAnimation: 'Idle_Neutral', animations: ['Leave', 'Enter', 'Idle_Neutral'].map(name => ({ name, format: 'sprite_sheet' as const, files: [`assets/animations/${name}.png`], frameWidth: 300, frameHeight: 300, frameCount: 1, fps: 1, loop: name === 'Idle_Neutral' })) }, files };
 }
 
 describe('Asset Pack manifest validation', () => {

@@ -61,6 +61,14 @@ export function validateManifest(input: unknown, expectedHash: string, limits: M
     animationNames.add(animation.name);
     if (!animation.files.length) invalid('Asset pack animation mapping has no files');
     for (const filePath of animation.files) if (typeof filePath !== 'string' || !paths.has(filePath)) invalid('Asset pack animation references an unknown file');
+    if (animation.format === 'sprite_sheet') {
+      const frameWidth = animation.frameWidth ?? 0; const frameHeight = animation.frameHeight ?? 0; const frameCount = animation.frameCount ?? 0; const fps = animation.fps ?? 0;
+      if (!Number.isSafeInteger(frameWidth) || !Number.isSafeInteger(frameHeight) || !Number.isSafeInteger(frameCount) || !Number.isSafeInteger(fps)
+        || frameWidth < 300 || frameHeight < 300 || frameWidth > 4096 || frameHeight > 4096
+        || frameCount < 1 || frameCount > 120 || fps < 1 || fps > 120) invalid('Asset pack sprite metadata is invalid');
+      const file = manifest.files.find(candidate => candidate.relativePath === animation.files[0]);
+      if (!file || file.mimeType !== 'image/png') invalid('Asset pack sprite sheet must reference a PNG asset');
+    }
   }
   for (const required of ['Idle_Neutral', 'Enter', 'Leave']) if (!animationNames.has(required)) invalid(`Asset pack is missing required ${required} animation`);
   for (const path of [manifest.runtime.portraitPath, manifest.runtime.iconPath]) if (path !== undefined && (!paths.has(path) || normalizeRelativePath(path) !== path)) invalid('Asset pack runtime image reference is invalid');
