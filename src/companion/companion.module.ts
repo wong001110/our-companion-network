@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { CompanionService } from './companion.service';
 import { CompanionCleanupService } from './companion-cleanup.service';
 import { AssetPackController, CompanionController, FriendCompanionController } from './companion.controller';
+import { CommonModule } from '../common/common.module';
 
-@Module({ controllers: [CompanionController, AssetPackController, FriendCompanionController], providers: [CompanionService, CompanionCleanupService] })
+@Module({ imports: [CommonModule], controllers: [CompanionController, AssetPackController, FriendCompanionController], providers: [CompanionService, CompanionCleanupService] })
 export class CompanionModule {}
