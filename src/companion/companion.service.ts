@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
 import { StorageService } from '../storage/storage.service';
@@ -75,12 +76,22 @@ export class CompanionService {
     if (dto.schemaVersion !== 1 || dto.totalFiles !== validated.manifest.files.length || dto.totalBytes !== validated.totalBytes) {
       throw new BadRequestException({ code: 'ASSET_PACK_MANIFEST_INVALID', message: 'Asset pack totals do not match its manifest' });
     }
-    const existing = await this.prisma.companionAssetPack.findUnique({ where: { companionId_manifestHash: { companionId, manifestHash: dto.manifestHash } }, select: PACK_SELECT });
+    const existing = await this.prisma.companionAssetPack.findUnique({
+      where: { companionId_manifestHash: { companionId, manifestHash: dto.manifestHash } },
+      select: { ...PACK_SELECT, companion: { select: { activeAssetPackId: true } } },
+    });
     if (existing) {
-      if (existing.status === 'active' || existing.status === 'superseded') return { reused: true, requiresActivation: existing.status === 'superseded', assetPack: this.pack(existing) };
+      const { companion: existingCompanion, ...existingPack } = existing;
+      if (existing.status === 'active' || existing.status === 'superseded') {
+        return {
+          reused: true,
+          requiresActivation: existing.status === 'superseded' || existingCompanion.activeAssetPackId !== existing.id,
+          assetPack: this.pack(existingPack),
+        };
+      }
       if (existing.status === 'uploading' || existing.status === 'verifying') {
         this.assertUploadSessionCurrent(existing);
-        let resumed = existing;
+        let resumed: any = existingPack;
         if (existing.status === 'verifying') {
           const claimed = await this.prisma.companionAssetPack.updateMany({ where: { id: existing.id, status: 'verifying' }, data: { status: 'uploading', failureCode: null, updatedAt: new Date() } });
           if (claimed.count !== 1) throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed before resuming upload' });
@@ -162,19 +173,16 @@ export class CompanionService {
       const manifest = this.manifestFromPack(started);
       const validated = validateManifest(manifest, started.manifestHash, this.storage.limits);
       await this.storage.putManifest(`${started.objectPrefix}/manifest.json`, validated.canonicalJson);
-      const result = await this.prisma.$transaction(async tx => {
-        const current = await tx.networkCompanion.findUniqueOrThrow({ where: { id: started.companionId }, select: { activeAssetPackId: true } });
-        const claimed = await tx.companionAssetPack.updateMany({
-          where: { id: started.id, companionId: started.companionId, status: 'verifying' },
-          data: { status: 'active', completedAt: new Date(), activatedAt: new Date(), failureCode: null },
-        });
-        if (claimed.count !== 1) throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed during verification' });
-        if (current.activeAssetPackId && current.activeAssetPackId !== started.id) {
-          await tx.companionAssetPack.updateMany({ where: { id: current.activeAssetPackId, status: 'active' }, data: { status: 'superseded', supersededAt: new Date() } });
-        }
-        await tx.companionAssetFile.updateMany({ where: { assetPackId: started.id }, data: { uploaded: true, verifiedAt: new Date() } });
-        return tx.networkCompanion.update({ where: { id: started.companionId }, data: { activeAssetPackId: started.id }, select: PUBLIC_SELECT });
-      });
+      const completedAt = new Date();
+      const result = await this.withActivePackUniqueRetry(() => this.prisma.$transaction(tx => this.activateVerifiedPackInTransaction(tx, {
+        companionId: started.companionId,
+        targetPackId: started.id,
+        allowedTargetStatuses: ['verifying'],
+        completedAt,
+        afterTargetActivated: async transaction => {
+          await transaction.companionAssetFile.updateMany({ where: { assetPackId: started.id }, data: { uploaded: true, verifiedAt: completedAt } });
+        },
+      })));
       await this.publishInvalidation(userId, 'companion.asset_pack.activated', { ownerUserId: userId, companionId: started.companionId, assetPackId: started.id });
       return { assetPack: this.pack(await this.prisma.companionAssetPack.findUniqueOrThrow({ where: { id: assetPackId }, select: PACK_SELECT })), companion: this.publicProfile(result) };
     } catch (error) {
@@ -190,29 +198,11 @@ export class CompanionService {
 
   async activateAssetPack(userId: string, assetPackId: string) {
     const ownedPack = await this.requireOwnedPack(userId, assetPackId, true);
-    const companion = await this.prisma.$transaction(async tx => {
-      const latestPack = await tx.companionAssetPack.findUnique({ where: { id: assetPackId }, select: { id: true, companionId: true, status: true } });
-      if (!latestPack) throw new NotFoundException({ code: 'ASSET_PACK_NOT_FOUND', message: 'Asset Pack was not found' });
-      if (latestPack.companionId !== ownedPack.companionId) throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed' });
-
-      const current = await tx.networkCompanion.findUniqueOrThrow({ where: { id: latestPack.companionId }, select: { activeAssetPackId: true } });
-      if (latestPack.status === 'active' && current.activeAssetPackId === latestPack.id) {
-        return tx.networkCompanion.findUniqueOrThrow({ where: { id: latestPack.companionId }, select: PUBLIC_SELECT });
-      }
-      if (latestPack.status !== 'superseded') {
-        throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed before activation' });
-      }
-
-      const claimed = await tx.companionAssetPack.updateMany({
-        where: { id: latestPack.id, companionId: latestPack.companionId, status: 'superseded' },
-        data: { status: 'active', activatedAt: new Date(), supersededAt: null, failureCode: null },
-      });
-      if (claimed.count !== 1) throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed before activation' });
-      if (current.activeAssetPackId && current.activeAssetPackId !== latestPack.id) {
-        await tx.companionAssetPack.updateMany({ where: { id: current.activeAssetPackId, status: 'active' }, data: { status: 'superseded', supersededAt: new Date() } });
-      }
-      return tx.networkCompanion.update({ where: { id: latestPack.companionId }, data: { activeAssetPackId: assetPackId }, select: PUBLIC_SELECT });
-    });
+    const companion = await this.withActivePackUniqueRetry(() => this.prisma.$transaction(tx => this.activateVerifiedPackInTransaction(tx, {
+      companionId: ownedPack.companionId,
+      targetPackId: assetPackId,
+      allowedTargetStatuses: ['superseded'],
+    })));
     await this.publishInvalidation(userId, 'companion.asset_pack.activated', { ownerUserId: userId, companionId: ownedPack.companionId, assetPackId });
     return this.publicProfile(companion);
   }
@@ -276,6 +266,115 @@ export class CompanionService {
       removed++;
     }
     return removed;
+  }
+
+  private async activateVerifiedPackInTransaction(
+    tx: Prisma.TransactionClient,
+    input: {
+      companionId: string;
+      targetPackId: string;
+      allowedTargetStatuses: readonly string[];
+      completedAt?: Date;
+      afterTargetActivated?: (transaction: Prisma.TransactionClient) => Promise<unknown>;
+    },
+  ): Promise<any> {
+    await tx.$queryRaw`
+      SELECT "id"
+      FROM "NetworkCompanion"
+      WHERE "id" = ${input.companionId}
+      FOR UPDATE
+    `;
+
+    const current = await tx.networkCompanion.findUnique({
+      where: { id: input.companionId },
+      select: { activeAssetPackId: true },
+    });
+    if (!current) throw new NotFoundException({ code: 'COMPANION_NOT_FOUND', message: 'Companion was not found' });
+
+    const target = await tx.companionAssetPack.findUnique({
+      where: { id: input.targetPackId },
+      select: { id: true, companionId: true, status: true },
+    });
+    if (!target) throw new NotFoundException({ code: 'ASSET_PACK_NOT_FOUND', message: 'Asset Pack was not found' });
+    if (target.companionId !== input.companionId) {
+      throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed' });
+    }
+
+    if (target.status === 'active') {
+      if (current.activeAssetPackId === target.id) {
+        return tx.networkCompanion.findUniqueOrThrow({ where: { id: input.companionId }, select: PUBLIC_SELECT });
+      }
+
+      // Repair a legacy/orphan active Pack deterministically while holding the same lock
+      // used by normal activation. The partial index ensures this path cannot create a
+      // second active Pack once the migration is installed.
+      await tx.companionAssetPack.updateMany({
+        where: { companionId: input.companionId, status: 'active', id: { not: target.id } },
+        data: { status: 'superseded', supersededAt: new Date() },
+      });
+      return tx.networkCompanion.update({
+        where: { id: input.companionId },
+        data: { activeAssetPackId: target.id },
+        select: PUBLIC_SELECT,
+      });
+    }
+
+    if (!input.allowedTargetStatuses.includes(target.status)) {
+      throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed before activation' });
+    }
+
+    const activatedAt = input.completedAt ?? new Date();
+    await tx.companionAssetPack.updateMany({
+      where: { companionId: input.companionId, status: 'active', id: { not: target.id } },
+      data: { status: 'superseded', supersededAt: activatedAt },
+    });
+
+    const claimed = await tx.companionAssetPack.updateMany({
+      where: { id: target.id, companionId: input.companionId, status: target.status },
+      data: {
+        status: 'active',
+        activatedAt,
+        supersededAt: null,
+        failureCode: null,
+        ...(input.completedAt ? { completedAt: input.completedAt } : {}),
+      },
+    });
+    if (claimed.count !== 1) {
+      throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack state changed before activation' });
+    }
+
+    await input.afterTargetActivated?.(tx);
+    return tx.networkCompanion.update({
+      where: { id: input.companionId },
+      data: { activeAssetPackId: target.id },
+      select: PUBLIC_SELECT,
+    });
+  }
+
+  private async withActivePackUniqueRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!this.isActivePackUniqueConflict(error)) throw error;
+    }
+
+    try {
+      return await operation();
+    } catch (error) {
+      if (this.isActivePackUniqueConflict(error)) {
+        throw new ConflictException({ code: 'ASSET_PACK_STATE_CHANGED', message: 'Asset Pack activation conflicted with another request' });
+      }
+      throw error;
+    }
+  }
+
+  private isActivePackUniqueConflict(error: unknown): boolean {
+    if (!error || typeof error !== 'object' || (error as { code?: string }).code !== 'P2002') return false;
+    const target = (error as { meta?: { target?: unknown } }).meta?.target;
+    // Prisma can report either the partial-index name or its constrained column.
+    // This path only mutates Pack state, never the manifest uniqueness pair.
+    return String(target).includes('CompanionAssetPack_one_active_per_companion')
+      || (Array.isArray(target) && target.includes('companionId'));
   }
 
   private async requireOwnedCompanion(userId: string, companionId: string) {

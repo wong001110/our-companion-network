@@ -30,6 +30,24 @@ describe('CompanionService final asset-pack lifecycle', () => {
     await expect(service.completeAssetPack('user-1', 'pack-1')).resolves.toMatchObject({ assetPack: { id: 'pack-1' }, companion: { id: 'companion-1' } });
   });
 
+  it('requires activation when an otherwise reusable active pack is orphaned from its companion pointer', async () => {
+    const orphan = { ...uploadPack('uploading'), status: 'active', companion: { activeAssetPackId: 'other-pack' } };
+    const prisma = {
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: orphan.companionId, ownerUserId: 'user-1' }) },
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue(orphan) },
+    };
+    const storage = { capability: { uploadsEnabled: true }, limits: { maxFileBytes: 10, maxPackBytes: 10, maxPackFiles: 10 } };
+    const service = new CompanionService(prisma as never, storage as never, {} as never);
+
+    await expect(service.initiateAssetPack('user-1', orphan.companionId, {
+      manifest: orphan.manifest,
+      manifestHash: orphan.manifestHash,
+      schemaVersion: 1,
+      totalFiles: orphan.totalFiles,
+      totalBytes: Number(orphan.totalBytes),
+    })).resolves.toMatchObject({ reused: true, requiresActivation: true, assetPack: { id: orphan.id } });
+  });
+
   it('skips cleanup when reactivation wins the superseded claim', async () => {
     const deleteObjects = jest.fn();
     const prisma = { companionAssetPack: { findMany: jest.fn().mockResolvedValue([{ id: 'pack-1', status: 'superseded', supersededAt: new Date('2026-06-01'), objectPrefix: 'redacted', files: [] }]), updateMany: jest.fn().mockResolvedValue({ count: 0 }), delete: jest.fn() } };
@@ -58,8 +76,9 @@ describe('CompanionService final asset-pack lifecycle', () => {
   it('rejects activation when cleanup claimed the stale superseded pack as deleting', async () => {
     const owned = { ...activePack, status: 'superseded' };
     const tx = {
+      $queryRaw: jest.fn(),
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: owned.id, companionId: owned.companionId, status: 'deleting' }), updateMany: jest.fn() },
-      networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ activeAssetPackId: 'other-pack' }), update: jest.fn() },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ activeAssetPackId: 'other-pack' }), update: jest.fn() },
     };
     const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(owned) }, $transaction: jest.fn((operation) => operation(tx)) };
     const service = new CompanionService(prisma as never, {} as never, {} as never);
@@ -72,14 +91,47 @@ describe('CompanionService final asset-pack lifecycle', () => {
     const owned = { ...activePack, status: 'superseded' };
     const publicCompanion = { id: owned.companionId, ownerUserId: 'user-1', name: 'Ann', publicDescription: null, publicTags: [], visibility: 'friends_only', published: false, activeAssetPackId: owned.id, createdAt: now, updatedAt: now, publishedAt: null };
     const tx = {
+      $queryRaw: jest.fn(),
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: owned.id, companionId: owned.companionId, status: 'superseded' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-      networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ activeAssetPackId: 'other-pack' }), update: jest.fn().mockResolvedValue(publicCompanion) },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ activeAssetPackId: 'other-pack' }), update: jest.fn().mockResolvedValue(publicCompanion) },
     };
     const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(owned) }, friendship: { findMany: jest.fn().mockResolvedValue([]) }, $transaction: jest.fn((operation) => operation(tx)) };
     const service = new CompanionService(prisma as never, {} as never, { publishToUser: jest.fn() } as never);
 
     await expect(service.activateAssetPack('user-1', owned.id)).resolves.toMatchObject({ id: owned.companionId, activeAssetPackId: owned.id });
-    expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: expect.objectContaining({ id: owned.id, status: 'superseded' }), data: expect.objectContaining({ status: 'active' }) }));
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: expect.objectContaining({ companionId: owned.companionId, status: 'active', id: { not: owned.id } }), data: expect.objectContaining({ status: 'superseded' }) }));
+    expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: expect.objectContaining({ id: owned.id, status: 'superseded' }), data: expect.objectContaining({ status: 'active' }) }));
+  });
+
+  it('repairs an orphan active pack under the Companion lock', async () => {
+    const owned = { ...activePack, companion: { ownerUserId: 'user-1' } };
+    const publicCompanion = { id: owned.companionId, ownerUserId: 'user-1', name: 'Ann', publicDescription: null, publicTags: [], visibility: 'friends_only', published: false, activeAssetPackId: owned.id, createdAt: now, updatedAt: now, publishedAt: null };
+    const tx = {
+      $queryRaw: jest.fn(),
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: owned.id, companionId: owned.companionId, status: 'active' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ activeAssetPackId: 'stale-pointer' }), findUniqueOrThrow: jest.fn(), update: jest.fn().mockResolvedValue(publicCompanion) },
+    };
+    const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(owned) }, friendship: { findMany: jest.fn().mockResolvedValue([]) }, $transaction: jest.fn((operation) => operation(tx)) };
+    const service = new CompanionService(prisma as never, {} as never, { publishToUser: jest.fn() } as never);
+
+    await expect(service.activateAssetPack('user-1', owned.id)).resolves.toMatchObject({ activeAssetPackId: owned.id });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.companionAssetPack.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { companionId: owned.companionId, status: 'active', id: { not: owned.id } },
+      data: expect.objectContaining({ status: 'superseded' }),
+    }));
+    expect(tx.networkCompanion.update).toHaveBeenCalledWith(expect.objectContaining({ data: { activeAssetPackId: owned.id } }));
+  });
+
+  it('retries a partial-active-index conflict once and maps a repeated conflict to a stable response', async () => {
+    const service = new CompanionService({} as never, {} as never, {} as never);
+    const uniqueConflict = { code: 'P2002', meta: { target: ['companionId'] } };
+    const retryOnce = jest.fn().mockRejectedValueOnce(uniqueConflict).mockResolvedValueOnce('ok');
+    await expect((service as any).withActivePackUniqueRetry(retryOnce)).resolves.toBe('ok');
+    expect(retryOnce).toHaveBeenCalledTimes(2);
+
+    await expect((service as any).withActivePackUniqueRetry(jest.fn().mockRejectedValue(uniqueConflict))).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_PACK_STATE_CHANGED' }) });
   });
 
   it('does not let Complete revive an upload cleanup claim to abandoning', async () => {
@@ -111,9 +163,10 @@ describe('CompanionService final asset-pack lifecycle', () => {
     const verifying = uploadPack('verifying');
     const publicCompanion = { id: verifying.companionId, ownerUserId: 'user-1', name: 'Ann', publicDescription: null, publicTags: [], visibility: 'friends_only', published: false, activeAssetPackId: verifying.id, createdAt: now, updatedAt: now, publishedAt: null };
     const tx = {
-      companionAssetPack: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      $queryRaw: jest.fn(),
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: verifying.id, companionId: verifying.companionId, status: 'verifying' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       companionAssetFile: { updateMany: jest.fn().mockResolvedValue({ count: 3 }) },
-      networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ activeAssetPackId: null }), update: jest.fn().mockResolvedValue(publicCompanion) },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ activeAssetPackId: null }), update: jest.fn().mockResolvedValue(publicCompanion) },
     };
     const prisma = {
       companionAssetPack: {
@@ -132,7 +185,8 @@ describe('CompanionService final asset-pack lifecycle', () => {
 
     await expect(service.completeAssetPack('user-1', uploading.id)).resolves.toMatchObject({ assetPack: { id: uploading.id }, companion: { id: verifying.companionId } });
     expect(prisma.companionAssetPack.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { id: uploading.id, status: 'uploading' }, data: expect.objectContaining({ status: 'verifying' }) }));
-    expect(tx.companionAssetPack.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: verifying.id, status: 'verifying' }), data: expect.objectContaining({ status: 'active' }) }));
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: expect.objectContaining({ id: verifying.id, status: 'verifying' }), data: expect.objectContaining({ status: 'active' }) }));
   });
 
   it('does not claim a recently started verification for abandonment cleanup', async () => {
