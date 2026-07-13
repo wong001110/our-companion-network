@@ -11,4 +11,9 @@ describe('ProtocolConfigService', () => {
     expect(service.isCompatible('1.3.9', '0.3')).toEqual({ compatible: false, reason: 'CLIENT_VERSION_TOO_OLD' });
     expect(service.isCompatible('1.4.0', '0.1')).toEqual({ compatible: false, reason: 'UNSUPPORTED_PROTOCOL_VERSION' });
   });
+
+  it('does not advertise Visit endpoints when R2 transfers are unavailable', () => {
+    const service = new ProtocolConfigService(config() as never, { capability: { configured: false, provider: 'cloudflare_r2', uploadsEnabled: false, downloadsEnabled: false } } as never);
+    expect(service.features).toMatchObject({ publicCompanions: false, assetPacks: false, visitInvitations: false, visitSessions: false });
+  });
 });

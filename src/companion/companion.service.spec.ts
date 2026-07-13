@@ -61,7 +61,7 @@ describe('CompanionService final asset-pack lifecycle', () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const service = new CompanionService({ companionAssetPack: { findMany } } as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 } } as never, {} as never);
     await service.cleanupSupersededPacks();
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ visitSessions: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] } } } })]) }) }));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ visitInvitationRefs: { none: { status: 'pending', assetPackRefId: { not: null } } }, visitSessionRefs: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] }, assetPackRefId: { not: null } } } })]) }) }));
   });
 
   it('keeps a claimed deleting pack for a later retry when R2 deletion fails', async () => {

@@ -185,8 +185,8 @@ model CompanionAssetPack {
   supersededAt     DateTime?
   files            CompanionAssetFile[]
   activeForCompanion NetworkCompanion? @relation("ActiveAssetPack")
-  visitInvitations  VisitInvitation[]
-  visitSessions     VisitSession[]
+  visitInvitationRefs VisitInvitation[] @relation("VisitInvitationAssetPackRef")
+  visitSessionRefs    VisitSession[] @relation("VisitSessionAssetPackRef")
 
   @@unique([companionId, manifestHash])
   @@index([companionId, status])
@@ -216,8 +216,9 @@ model VisitInvitation {
   host                 User     @relation("VisitInvitationHost", fields: [hostUserId], references: [id], onDelete: Cascade)
   networkCompanionId   String
   networkCompanion     NetworkCompanion @relation(fields: [networkCompanionId], references: [id], onDelete: Restrict)
-  assetPackId          String
-  assetPack            CompanionAssetPack @relation(fields: [assetPackId], references: [id], onDelete: Restrict)
+  assetPackSnapshotId  String
+  assetPackRefId       String?
+  assetPackRef         CompanionAssetPack? @relation("VisitInvitationAssetPackRef", fields: [assetPackRefId], references: [id], onDelete: SetNull)
   companionName        String
   companionDescription String?
   companionTags        String[] @default([])
@@ -232,6 +233,7 @@ model VisitInvitation {
   @@index([visitorOwnerUserId, status])
   @@index([hostUserId, status])
   @@index([expiresAt, status])
+  @@index([assetPackRefId, status])
 }
 
 model VisitSession {
@@ -244,8 +246,9 @@ model VisitSession {
   host                 User     @relation("VisitSessionHost", fields: [hostUserId], references: [id], onDelete: Cascade)
   networkCompanionId   String
   networkCompanion     NetworkCompanion @relation(fields: [networkCompanionId], references: [id], onDelete: Restrict)
-  assetPackId          String
-  assetPack            CompanionAssetPack @relation(fields: [assetPackId], references: [id], onDelete: Restrict)
+  assetPackSnapshotId  String
+  assetPackRefId       String?
+  assetPackRef         CompanionAssetPack? @relation("VisitSessionAssetPackRef", fields: [assetPackRefId], references: [id], onDelete: SetNull)
   state                String
   visitorOwnerReadyAt  DateTime?
   hostReadyAt          DateTime?
@@ -262,6 +265,6 @@ model VisitSession {
 
   @@index([visitorOwnerUserId, state])
   @@index([hostUserId, state])
-  @@index([assetPackId, state])
+  @@index([assetPackRefId, state])
   @@index([updatedAt, state])
 }

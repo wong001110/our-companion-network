@@ -61,9 +61,14 @@ export class CompanionService {
   }
 
   async unpublish(userId: string, companionId: string) {
-    await this.requireOwnedCompanion(userId, companionId);
-    const companion = await this.prisma.networkCompanion.update({ where: { id: companionId }, data: { published: false, publishedAt: null }, select: PUBLIC_SELECT });
-    await this.visits?.endSessionsForCompanion(companionId, 'companion_unpublished');
+    const companion = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "NetworkCompanion" WHERE "id" = ${companionId} FOR UPDATE`;
+      const owned = await tx.networkCompanion.findUnique({ where: { id: companionId }, select: { ownerUserId: true } });
+      if (!owned) throw new NotFoundException({ code: 'COMPANION_NOT_FOUND', message: 'Companion was not found' });
+      if (owned.ownerUserId !== userId) throw new ForbiddenException({ code: 'COMPANION_NOT_OWNED', message: 'Companion is not available' });
+      return tx.networkCompanion.update({ where: { id: companionId }, data: { published: false, publishedAt: null }, select: PUBLIC_SELECT });
+    });
+    await this.visits?.revokeCompanionVisits(companionId, 'companion_unpublished');
     await this.publishInvalidation(userId, 'companion.profile.unpublished', { ownerUserId: userId, companionId });
     return this.publicProfile(companion);
   }
@@ -260,7 +265,10 @@ export class CompanionService {
 
   async cleanupSupersededPacks(limit = 100) {
     const before = new Date(Date.now() - this.storage.limits.supersededPackRetentionDays * 24 * 3_600_000);
-    const noLiveVisit = { visitSessions: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] } } } };
+    const noLiveVisit = {
+      visitInvitationRefs: { none: { status: 'pending', assetPackRefId: { not: null } } },
+      visitSessionRefs: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] }, assetPackRefId: { not: null } } },
+    };
     const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { OR: [{ status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, { status: 'deleting' }] }, include: { files: { select: { objectKey: true } } } });
     let removed = 0;
     for (const pack of packs) {

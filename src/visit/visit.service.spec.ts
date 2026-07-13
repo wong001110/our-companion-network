@@ -10,10 +10,10 @@ const companionId = '55555555-5555-4555-8555-555555555555';
 const packId = '66666666-6666-4666-8666-666666666666';
 
 function invitation(status = 'pending') {
-  return { id: invitationId, visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackId: packId, companionName: 'Ann', companionDescription: 'Public', companionTags: ['kind'], status, expiresAt: new Date(now.getTime() + 60_000), respondedAt: null, cancelledAt: null, createdAt: now, updatedAt: now };
+  return { id: invitationId, visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackSnapshotId: packId, assetPackRefId: status === 'pending' ? packId : null, companionName: 'Ann', companionDescription: 'Public', companionTags: ['kind'], status, expiresAt: new Date(now.getTime() + 60_000), respondedAt: null, cancelledAt: null, createdAt: now, updatedAt: now };
 }
 function session(state = 'preparing') {
-  return { id: sessionId, invitationId, visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackId: packId, state, visitorOwnerReadyAt: null, hostReadyAt: null, readyAt: null, startedAt: null, endedAt: null, endReason: null, failureCode: null, createdAt: now, updatedAt: now };
+  return { id: sessionId, invitationId, visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackSnapshotId: packId, assetPackRefId: ['preparing', 'ready', 'active', 'ending'].includes(state) ? packId : null, state, visitorOwnerReadyAt: null, hostReadyAt: null, readyAt: null, startedAt: null, endedAt: null, endReason: null, failureCode: null, createdAt: now, updatedAt: now };
 }
 function service(prisma: Record<string, unknown> = {}) {
   const storage = { capability: { uploadsEnabled: true, downloadsEnabled: true }, createGetUrl: jest.fn() };
@@ -36,14 +36,16 @@ describe('VisitService S4 lifecycle and privacy', () => {
       blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null) },
       visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue(created) },
+      user: { findUnique: jest.fn().mockResolvedValue({ activeNetworkCompanionId: companionId }) },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, ownerUserId: owner, name: 'Ann', publicDescription: 'Public', publicTags: ['kind'], published: true, visibility: 'friends_only', activeAssetPackId: packId }) },
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active' }) },
     };
     const prisma = {
-      user: { findUnique: jest.fn().mockResolvedValue({ activeNetworkCompanion: { id: companionId, name: 'Ann', publicDescription: 'Public', publicTags: ['kind'], published: true, visibility: 'friends_only', activeAssetPackId: packId, activeAssetPack: { id: packId, status: 'active' } } }) },
       $transaction: jest.fn((operation) => operation(tx)),
     };
     const { instance, events } = service(prisma);
     await expect(instance.createInvitation(owner, host)).resolves.toMatchObject({ id: invitationId, assetPackId: packId, companionName: 'Ann', companionTags: ['kind'] });
-    expect(tx.visitInvitation.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackId: packId }) }));
+    expect(tx.visitInvitation.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackSnapshotId: packId, assetPackRefId: packId }) }));
     expect(events.publishToUser).toHaveBeenCalledWith(owner, 'visit.invitation.created', { invitationId });
   });
 
@@ -74,7 +76,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
   });
 
   it('allows session asset access only to the host and rejects URL batches above fifty', async () => {
-    const { instance } = service({ visitSession: { findUnique: jest.fn().mockResolvedValue({ id: sessionId, hostUserId: host, visitorOwnerUserId: owner, assetPackId: packId, networkCompanionId: companionId, state: 'preparing' }) } });
+    const { instance } = service({ visitSession: { findUnique: jest.fn().mockResolvedValue({ id: sessionId, hostUserId: host, visitorOwnerUserId: owner, assetPackSnapshotId: packId, assetPackRefId: packId, networkCompanionId: companionId, state: 'preparing' }) } });
     await expect(instance.getSessionManifest(owner, sessionId)).rejects.toBeInstanceOf(NotFoundException);
     await expect(instance.createSessionDownloadUrls(host, sessionId, Array.from({ length: 51 }, () => packId))).rejects.toBeInstanceOf(ConflictException);
   });

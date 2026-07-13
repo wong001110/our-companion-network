@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
-import { IsArray, IsUUID } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsOptional, IsUUID } from 'class-validator';
 import { AuthGuard } from '@nestjs/passport';
 import { CurrentUser, UserPayload } from '../common/decorators/current-user.decorator';
 import { SocialRateLimit } from '../common/decorators/social-rate-limit.decorator';
@@ -7,13 +7,17 @@ import { SocialRateLimitGuard } from '../common/guards/social-rate-limit.guard';
 import { VisitService } from './visit.service';
 
 class CreateInvitationDto { @IsUUID() hostUserId: string; }
-class VisitFileIdsDto { @IsArray() @IsUUID('4', { each: true }) fileIds: string[]; }
+class ListVisitInvitationsDto {
+  @IsOptional() @IsIn(['incoming', 'outgoing']) direction?: 'incoming' | 'outgoing';
+  @IsOptional() @IsIn(['pending', 'accepted', 'declined', 'cancelled', 'expired']) status?: string;
+}
+class VisitFileIdsDto { @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @IsUUID('4', { each: true }) fileIds: string[]; }
 
 @UseGuards(AuthGuard('jwt'), SocialRateLimitGuard)
 @Controller('visit-invitations')
 export class VisitInvitationController {
   constructor(private readonly visits: VisitService) {}
-  @Get() @SocialRateLimit('visit_read') list(@CurrentUser() user: UserPayload, @Query('direction') direction?: string, @Query('status') status?: string) { return this.visits.listInvitations(user.id, direction, status); }
+  @Get() @SocialRateLimit('visit_read') list(@CurrentUser() user: UserPayload, @Query() query: ListVisitInvitationsDto) { return this.visits.listInvitations(user.id, query.direction, query.status); }
   @Post() @SocialRateLimit('visit_create') create(@CurrentUser() user: UserPayload, @Body() dto: CreateInvitationDto) { return this.visits.createInvitation(user.id, dto.hostUserId); }
   @Post(':id/accept') @SocialRateLimit('visit_mutation') accept(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.acceptInvitation(user.id, id); }
   @Post(':id/decline') @SocialRateLimit('visit_mutation') decline(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.declineInvitation(user.id, id); }

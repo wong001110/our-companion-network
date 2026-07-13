@@ -29,7 +29,7 @@ export class ProtocolConfigService {
 
   get features() {
     const enabled = this.storageCapability.uploadsEnabled && this.storageCapability.downloadsEnabled;
-    return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled } as const;
+    return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled, visitInvitations: enabled, visitSessions: enabled } as const;
   }
 
   isCompatible(clientVersion?: string, protocolVersion?: string): { compatible: boolean; reason?: string } {
