@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
@@ -6,6 +6,7 @@ import { StorageService } from '../storage/storage.service';
 import { InitiateAssetPackDto } from './dto/initiate-asset-pack.dto';
 import { UpsertCompanionDto } from './dto/upsert-companion.dto';
 import { validateManifest } from './asset-manifest';
+import { VisitService } from '../visit/visit.service';
 
 const PUBLIC_SELECT = { id: true, ownerUserId: true, name: true, publicDescription: true, publicTags: true, visibility: true, published: true, activeAssetPackId: true, createdAt: true, updatedAt: true, publishedAt: true } as const;
 const PACK_SELECT = { id: true, companionId: true, manifestHash: true, schemaVersion: true, status: true, totalFiles: true, totalBytes: true, failureCode: true, createdAt: true, updatedAt: true, completedAt: true, activatedAt: true, supersededAt: true } as const;
@@ -13,7 +14,12 @@ export interface CompleteAssetPackResult { assetPack: Record<string, unknown>; c
 
 @Injectable()
 export class CompanionService {
-  constructor(private readonly prisma: PrismaService, private readonly storage: StorageService, private readonly events: SocialEventPublisher) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+    private readonly events: SocialEventPublisher,
+    @Optional() private readonly visits?: VisitService,
+  ) {}
 
   async getMine(userId: string) {
     const [companions, user] = await Promise.all([
@@ -57,6 +63,7 @@ export class CompanionService {
   async unpublish(userId: string, companionId: string) {
     await this.requireOwnedCompanion(userId, companionId);
     const companion = await this.prisma.networkCompanion.update({ where: { id: companionId }, data: { published: false, publishedAt: null }, select: PUBLIC_SELECT });
+    await this.visits?.endSessionsForCompanion(companionId, 'companion_unpublished');
     await this.publishInvalidation(userId, 'companion.profile.unpublished', { ownerUserId: userId, companionId });
     return this.publicProfile(companion);
   }
@@ -253,12 +260,13 @@ export class CompanionService {
 
   async cleanupSupersededPacks(limit = 100) {
     const before = new Date(Date.now() - this.storage.limits.supersededPackRetentionDays * 24 * 3_600_000);
-    const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { OR: [{ status: 'superseded', supersededAt: { lt: before } }, { status: 'deleting' }] }, include: { files: { select: { objectKey: true } } } });
+    const noLiveVisit = { visitSessions: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] } } } };
+    const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { OR: [{ status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, { status: 'deleting' }] }, include: { files: { select: { objectKey: true } } } });
     let removed = 0;
     for (const pack of packs) {
       if (!this.storage.capability.uploadsEnabled) break;
       if (pack.status !== 'deleting') {
-        const claimed = await this.prisma.companionAssetPack.updateMany({ where: { id: pack.id, status: 'superseded', supersededAt: { lt: before } }, data: { status: 'deleting' } });
+        const claimed = await this.prisma.companionAssetPack.updateMany({ where: { id: pack.id, status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, data: { status: 'deleting' } });
         if (claimed.count !== 1) continue;
       }
       await this.storage.deleteObjects([...pack.files.map(file => file.objectKey), `${pack.objectPrefix}/manifest.json`]);

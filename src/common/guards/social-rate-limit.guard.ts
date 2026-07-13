@@ -13,6 +13,11 @@ const POLICIES: Record<SocialRateLimitPolicy, { windowMs: number; limit: number 
   asset_upload_urls: { windowMs: 60_000, limit: 120 },
   asset_complete: { windowMs: 3_600_000, limit: 20 },
   asset_download_urls: { windowMs: 60_000, limit: 120 },
+  visit_read: { windowMs: 60_000, limit: 120 },
+  visit_create: { windowMs: 3_600_000, limit: 10 },
+  visit_mutation: { windowMs: 60_000, limit: 30 },
+  visit_heartbeat: { windowMs: 60_000, limit: 12 },
+  visit_asset_urls: { windowMs: 60_000, limit: 60 },
 };
 
 @Injectable()

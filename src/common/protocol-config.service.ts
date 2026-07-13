@@ -9,17 +9,18 @@ export class ProtocolConfigService {
   readonly serverVersion: string;
   readonly baseFeatures = {
     authentication: true,
-    socketConnection: true,
+    sockets: true,
     friends: true,
     presence: true,
-    visitInvitations: false,
-    visitSessions: false,
+    visitInvitations: true,
+    visitSessions: true,
+    visualVisits: false,
   } as const;
 
   constructor(config: ConfigService, private readonly storage?: StorageService) {
-    this.protocolVersion = config.get<string>('PROTOCOL_VERSION', '0.2');
-    this.minimumClientVersion = config.get<string>('MINIMUM_CLIENT_VERSION', '0.2.0');
-    this.serverVersion = config.get<string>('SERVER_VERSION', '0.2.0');
+    this.protocolVersion = config.get<string>('PROTOCOL_VERSION', '0.3');
+    this.minimumClientVersion = config.get<string>('MINIMUM_CLIENT_VERSION', '0.3.0');
+    this.serverVersion = config.get<string>('SERVER_VERSION', '0.3.0');
   }
 
   get storageCapability(): StorageCapability {

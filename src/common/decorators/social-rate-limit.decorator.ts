@@ -10,7 +10,12 @@ export type SocialRateLimitPolicy =
   | 'asset_initiate'
   | 'asset_upload_urls'
   | 'asset_complete'
-  | 'asset_download_urls';
+  | 'asset_download_urls'
+  | 'visit_read'
+  | 'visit_create'
+  | 'visit_mutation'
+  | 'visit_heartbeat'
+  | 'visit_asset_urls';
 
 export const SOCIAL_RATE_LIMIT_POLICY = 'socialRateLimitPolicy';
 

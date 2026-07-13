@@ -1,63 +1,35 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Patch,
-  Body,
-  Param,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { IsArray, IsUUID } from 'class-validator';
 import { AuthGuard } from '@nestjs/passport';
-import { VisitService } from './visit.service';
-import { CreateVisitDto } from './dto/create-visit.dto';
 import { CurrentUser, UserPayload } from '../common/decorators/current-user.decorator';
+import { SocialRateLimit } from '../common/decorators/social-rate-limit.decorator';
+import { SocialRateLimitGuard } from '../common/guards/social-rate-limit.guard';
+import { VisitService } from './visit.service';
 
-@Controller('visits')
-@UseGuards(AuthGuard('jwt'))
-export class VisitController {
-  constructor(private readonly visitService: VisitService) {}
+class CreateInvitationDto { @IsUUID() hostUserId: string; }
+class VisitFileIdsDto { @IsArray() @IsUUID('4', { each: true }) fileIds: string[]; }
 
-  @Post()
-  async sendVisit(
-    @CurrentUser() user: UserPayload,
-    @Body() dto: CreateVisitDto,
-  ) {
-    return this.visitService.sendVisit(user.id, dto);
-  }
+@UseGuards(AuthGuard('jwt'), SocialRateLimitGuard)
+@Controller('visit-invitations')
+export class VisitInvitationController {
+  constructor(private readonly visits: VisitService) {}
+  @Get() @SocialRateLimit('visit_read') list(@CurrentUser() user: UserPayload, @Query('direction') direction?: string, @Query('status') status?: string) { return this.visits.listInvitations(user.id, direction, status); }
+  @Post() @SocialRateLimit('visit_create') create(@CurrentUser() user: UserPayload, @Body() dto: CreateInvitationDto) { return this.visits.createInvitation(user.id, dto.hostUserId); }
+  @Post(':id/accept') @SocialRateLimit('visit_mutation') accept(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.acceptInvitation(user.id, id); }
+  @Post(':id/decline') @SocialRateLimit('visit_mutation') decline(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.declineInvitation(user.id, id); }
+  @Post(':id/cancel') @SocialRateLimit('visit_mutation') cancel(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.cancelInvitation(user.id, id); }
+}
 
-  @Get('inbox')
-  async getInbox(@CurrentUser() user: UserPayload) {
-    return this.visitService.getInbox(user.id);
-  }
-
-  @Get('outbox')
-  async getOutbox(@CurrentUser() user: UserPayload) {
-    return this.visitService.getOutbox(user.id);
-  }
-
-  @Get('history')
-  async getHistory(@CurrentUser() user: UserPayload) {
-    return this.visitService.getHistory(user.id);
-  }
-
-  @Get('pending')
-  async getPendingVisits(@CurrentUser() user: UserPayload) {
-    return this.visitService.getPendingVisits(user.id);
-  }
-
-  @Patch(':id/accept')
-  async acceptVisit(
-    @CurrentUser() user: UserPayload,
-    @Param('id') visitId: string,
-  ) {
-    return this.visitService.acceptVisit(user.id, visitId);
-  }
-
-  @Patch(':id/dismiss')
-  async dismissVisit(
-    @CurrentUser() user: UserPayload,
-    @Param('id') visitId: string,
-  ) {
-    return this.visitService.dismissVisit(user.id, visitId);
-  }
+@UseGuards(AuthGuard('jwt'), SocialRateLimitGuard)
+@Controller('visit-sessions')
+export class VisitSessionController {
+  constructor(private readonly visits: VisitService) {}
+  @Get() @SocialRateLimit('visit_read') list(@CurrentUser() user: UserPayload) { return this.visits.listSessions(user.id); }
+  @Get(':id') @SocialRateLimit('visit_read') get(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.getSession(user.id, id); }
+  @Post(':id/ready') @SocialRateLimit('visit_mutation') ready(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.markReady(user.id, id); }
+  @Post(':id/start') @SocialRateLimit('visit_mutation') start(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.startSession(user.id, id); }
+  @Post(':id/end') @SocialRateLimit('visit_mutation') end(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.endSession(user.id, id); }
+  @Post(':id/heartbeat') @SocialRateLimit('visit_heartbeat') heartbeat(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.heartbeat(user.id, id); }
+  @Get(':id/assets/manifest') @SocialRateLimit('visit_read') manifest(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.getSessionManifest(user.id, id); }
+  @Post(':id/assets/download-urls') @SocialRateLimit('visit_asset_urls') urls(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: VisitFileIdsDto) { return this.visits.createSessionDownloadUrls(user.id, id, dto.fileIds); }
 }

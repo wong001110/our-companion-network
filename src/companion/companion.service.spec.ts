@@ -57,6 +57,13 @@ describe('CompanionService final asset-pack lifecycle', () => {
     expect(prisma.companionAssetPack.delete).not.toHaveBeenCalled();
   });
 
+  it('excludes superseded Packs pinned by a non-terminal Visit before cleanup can claim them', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new CompanionService({ companionAssetPack: { findMany } } as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 } } as never, {} as never);
+    await service.cleanupSupersededPacks();
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ visitSessions: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] } } } })]) }) }));
+  });
+
   it('keeps a claimed deleting pack for a later retry when R2 deletion fails', async () => {
     const prisma = { companionAssetPack: { findMany: jest.fn().mockResolvedValue([{ id: 'pack-1', status: 'deleting', objectPrefix: 'redacted', files: [] }]), delete: jest.fn() } };
     const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 }, deleteObjects: jest.fn().mockRejectedValue(new Error('unavailable')) } as never, {} as never);

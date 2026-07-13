@@ -1,3 +1,3 @@
 # Social protocol
 
-S3 protocol is `0.2`; the minimum desktop and server versions are `0.2.0`. Metadata advertises `publicCompanions` and `assetPacks` only when private R2 is ready, plus a sanitized storage capability with no account, bucket, endpoint or secrets.
+S4 protocol is `0.3`; the minimum desktop and server versions are `0.3.0`. Metadata advertises authentication, sockets, friends, presence, public Companions, Asset Packs, Visit Invitations, and Visit Sessions. Asset-dependent flags require private R2 capability. `visualVisits` is explicitly `false`.

@@ -3,14 +3,20 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FriendRequestDto } from './dto/friend-request.dto';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
+import { VisitService } from '../visit/visit.service';
 
 @Injectable()
 export class FriendService {
-  constructor(private prisma: PrismaService, private readonly events: SocialEventPublisher) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly events: SocialEventPublisher,
+    @Optional() private readonly visits?: VisitService,
+  ) {}
 
   async lookupByFriendCode(code: string, requesterId?: string) {
     const normalizedCode = code.trim().toUpperCase();
@@ -285,6 +291,7 @@ export class FriendService {
       }),
     ]);
 
+    await this.visits?.endSessionsBetween(userId, friendId, 'friendship_removed');
     this.events.publishToUser(userId, 'friendship.removed', { userId: friendId });
     this.events.publishToUser(friendId, 'friendship.removed', { userId });
     return { message: 'Friend removed' };
@@ -332,6 +339,7 @@ export class FriendService {
       }),
     ]);
 
+    await this.visits?.endSessionsBetween(userId, blockedId, 'user_blocked');
     this.events.publishToUser(userId, 'block.created', { userId: blockedId });
     this.events.publishToUser(blockedId, 'friendship.removed', { userId });
     return { message: 'User blocked' };

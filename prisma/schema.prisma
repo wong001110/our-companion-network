@@ -32,6 +32,10 @@ model User {
   networkCompanions NetworkCompanion[] @relation("OwnedNetworkCompanions")
   activeNetworkCompanionId String? @unique
   activeNetworkCompanion NetworkCompanion? @relation("UserActiveNetworkCompanion", fields: [activeNetworkCompanionId], references: [id])
+  visitInvitationsOwned VisitInvitation[] @relation("VisitInvitationVisitorOwner")
+  visitInvitationsHosted VisitInvitation[] @relation("VisitInvitationHost")
+  visitSessionsOwned VisitSession[] @relation("VisitSessionVisitorOwner")
+  visitSessionsHosted VisitSession[] @relation("VisitSessionHost")
 }
 
 model DeviceSession {
@@ -156,6 +160,8 @@ model NetworkCompanion {
   updatedAt         DateTime @updatedAt
   publishedAt       DateTime?
   assetPacks        CompanionAssetPack[] @relation("CompanionAssetPacks")
+  visitInvitations  VisitInvitation[]
+  visitSessions     VisitSession[]
 
   @@index([ownerUserId])
 }
@@ -179,6 +185,8 @@ model CompanionAssetPack {
   supersededAt     DateTime?
   files            CompanionAssetFile[]
   activeForCompanion NetworkCompanion? @relation("ActiveAssetPack")
+  visitInvitations  VisitInvitation[]
+  visitSessions     VisitSession[]
 
   @@unique([companionId, manifestHash])
   @@index([companionId, status])
@@ -198,4 +206,62 @@ model CompanionAssetFile {
   verifiedAt   DateTime?
 
   @@unique([assetPackId, relativePath])
+}
+
+model VisitInvitation {
+  id                   String   @id @default(uuid())
+  visitorOwnerUserId   String
+  visitorOwner         User     @relation("VisitInvitationVisitorOwner", fields: [visitorOwnerUserId], references: [id], onDelete: Cascade)
+  hostUserId           String
+  host                 User     @relation("VisitInvitationHost", fields: [hostUserId], references: [id], onDelete: Cascade)
+  networkCompanionId   String
+  networkCompanion     NetworkCompanion @relation(fields: [networkCompanionId], references: [id], onDelete: Restrict)
+  assetPackId          String
+  assetPack            CompanionAssetPack @relation(fields: [assetPackId], references: [id], onDelete: Restrict)
+  companionName        String
+  companionDescription String?
+  companionTags        String[] @default([])
+  status               String
+  expiresAt            DateTime
+  respondedAt          DateTime?
+  cancelledAt          DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  session              VisitSession?
+
+  @@index([visitorOwnerUserId, status])
+  @@index([hostUserId, status])
+  @@index([expiresAt, status])
+}
+
+model VisitSession {
+  id                   String   @id @default(uuid())
+  invitationId         String   @unique
+  invitation           VisitInvitation @relation(fields: [invitationId], references: [id], onDelete: Restrict)
+  visitorOwnerUserId   String
+  visitorOwner         User     @relation("VisitSessionVisitorOwner", fields: [visitorOwnerUserId], references: [id], onDelete: Cascade)
+  hostUserId           String
+  host                 User     @relation("VisitSessionHost", fields: [hostUserId], references: [id], onDelete: Cascade)
+  networkCompanionId   String
+  networkCompanion     NetworkCompanion @relation(fields: [networkCompanionId], references: [id], onDelete: Restrict)
+  assetPackId          String
+  assetPack            CompanionAssetPack @relation(fields: [assetPackId], references: [id], onDelete: Restrict)
+  state                String
+  visitorOwnerReadyAt  DateTime?
+  hostReadyAt          DateTime?
+  visitorOwnerSeenAt   DateTime?
+  hostSeenAt           DateTime?
+  readyAt              DateTime?
+  startedAt            DateTime?
+  endingAt             DateTime?
+  endedAt              DateTime?
+  endReason            String?
+  failureCode          String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([visitorOwnerUserId, state])
+  @@index([hostUserId, state])
+  @@index([assetPackId, state])
+  @@index([updatedAt, state])
 }
