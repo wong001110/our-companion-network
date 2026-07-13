@@ -24,7 +24,7 @@ describe('FriendService S2 rules', () => {
     };
     const service = new FriendService(prisma as never, eventPublisher as never);
     await expect(service.sendFriendRequest('user-a', { receiverId: 'user-b' })).resolves.toEqual(request);
-    expect(prisma.friendRequest.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: { status: 'pending' } }));
+    expect(prisma.friendRequest.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ status: 'pending', updatedAt: expect.any(Date) }) }));
     expect(eventPublisher.publishToUser).toHaveBeenCalledWith('user-b', 'friend.request.created', { requestId: 'request-1' });
   });
 

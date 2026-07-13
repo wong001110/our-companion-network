@@ -1,9 +1,17 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
-export class PresenceService {
+export class PresenceService implements OnModuleInit {
   constructor(private prisma: PrismaService) {}
+
+  /** Single-instance MVP Presence recovery. Horizontal scaling needs a shared lease/coordinator. */
+  async onModuleInit(): Promise<void> {
+    await this.prisma.presence.updateMany({
+      where: { status: { in: ['online', 'idle'] } },
+      data: { status: 'offline', lastSeenAt: new Date() },
+    });
+  }
 
   async setOnline(userId: string) {
     const presence = await this.prisma.presence.upsert({
@@ -59,10 +67,13 @@ export class PresenceService {
       select: {
         status: true,
         lastSeenAt: true,
+        updatedAt: true,
       },
     });
 
-    return presence || { status: 'offline', lastSeenAt: null };
+    return presence
+      ? { status: presence.status, updatedAt: presence.updatedAt.toISOString() }
+      : { status: 'offline', updatedAt: null };
   }
 
   async getFriendsPresence(userId: string) {
@@ -81,11 +92,19 @@ export class PresenceService {
         userId: true,
         status: true,
         lastSeenAt: true,
+        updatedAt: true,
       },
     });
 
     const byUser = new Map(presences.map((presence) => [presence.userId, presence]));
-    return friendIds.map((friendId) => byUser.get(friendId) ?? { userId: friendId, status: 'offline', updatedAt: null });
+    return friendIds.map((friendId) => {
+      const presence = byUser.get(friendId);
+      return {
+        userId: friendId,
+        status: presence?.status ?? 'offline',
+        updatedAt: presence?.updatedAt?.toISOString() ?? presence?.lastSeenAt?.toISOString() ?? null,
+      };
+    });
   }
 
   async getFriendIds(userId: string): Promise<string[]> {

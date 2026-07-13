@@ -49,12 +49,11 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       this.offlineTimers.delete(userId);
     }
     const sockets = this.userSockets.get(userId) ?? new Set<string>();
-    const wasOffline = sockets.size === 0;
     sockets.add(client.id);
     client.join(`user:${userId}`);
     this.socketActivity.set(client.id, Date.now());
     this.userSockets.set(userId, sockets);
-    if (wasOffline) await this.publishPresence(userId, 'online');
+    await this.publishPresence(userId, 'online');
     this.scheduleIdleCheck(userId);
   }
 
@@ -65,7 +64,11 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     if (!sockets) return;
     sockets.delete(client.id);
     this.socketActivity.delete(client.id);
-    if (sockets.size > 0) return;
+    if (sockets.size > 0) {
+      await this.publishAggregatePresence(userId);
+      this.scheduleIdleCheck(userId);
+      return;
+    }
     this.userSockets.delete(userId);
     const idleTimer = this.activityTimers.get(userId);
     if (idleTimer) {
@@ -95,7 +98,7 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     const now = Date.now();
     if (now - (this.socketActivity.get(client.id) ?? 0) < 15_000) return;
     this.socketActivity.set(client.id, now);
-    await this.publishPresence(userId, 'online');
+    await this.publishAggregatePresence(userId);
     this.scheduleIdleCheck(userId);
   }
 
@@ -103,13 +106,23 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     const existing = this.activityTimers.get(userId);
     if (existing) clearTimeout(existing);
     const idleMs = Math.max(1, Number(this.config.get<string>('PRESENCE_IDLE_SECONDS', '300'))) * 1000;
+    const activities = [...(this.userSockets.get(userId) ?? [])]
+      .map((socketId) => this.socketActivity.get(socketId) ?? 0);
+    if (!activities.length) return;
+    const nextEvaluationMs = Math.max(0, Math.min(...activities.map((activity) => activity + idleMs - Date.now())));
     const timer = setTimeout(() => {
       this.activityTimers.delete(userId);
-      const active = [...(this.userSockets.get(userId) ?? [])].some((socketId) => Date.now() - (this.socketActivity.get(socketId) ?? 0) < idleMs);
-      if (active) this.scheduleIdleCheck(userId);
-      else if (this.userSockets.has(userId)) void this.publishPresence(userId, 'idle');
-    }, idleMs);
+      void this.publishAggregatePresence(userId).then(() => this.scheduleIdleCheck(userId));
+    }, nextEvaluationMs);
     this.activityTimers.set(userId, timer);
+  }
+
+  private async publishAggregatePresence(userId: string): Promise<void> {
+    const idleMs = Math.max(1, Number(this.config.get<string>('PRESENCE_IDLE_SECONDS', '300'))) * 1000;
+    const sockets = this.userSockets.get(userId);
+    if (!sockets?.size) return;
+    const isAnyActive = [...sockets].some((socketId) => Date.now() - (this.socketActivity.get(socketId) ?? 0) < idleMs);
+    await this.publishPresence(userId, isAnyActive ? 'online' : 'idle');
   }
 
   private async publishPresence(userId: string, status: 'online' | 'idle' | 'offline'): Promise<void> {

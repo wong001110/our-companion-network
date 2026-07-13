@@ -1,8 +1,21 @@
 # Social S2 execution log
 
-- Baseline: `b0c914e3188ff815d38572f59af08c714e05854a`.
-- Data: added FriendRequest lifecycle timestamp and indexes in `20260712010000_s2_social_lifecycle`; terminal directed requests are reopened to allow resending.
-- Rules: reverse pending requests accept the existing request; friendships are symmetric directed pairs; blocks remove friendships, cancel requests in both directions, and return generic social errors to the blocked user.
-- Events: user Socket.IO rooms publish friend/block invalidations and friend-only presence updates. Presence supports online, idle, offline, activity throttling, multi-socket aggregation, and disconnect grace.
-- Verification: Prisma validation, server build, 7 unit tests, schema push, and two-account PostgreSQL REST lifecycle verification passed.
-- Deferred: S3 public profiles/assets, S4 invitations, and S5 visits remain out of scope.
+- Previous baseline: `6f03fb020eb6b11795984c7ca63db4ed5ed03e73`.
+- Closure-repair commit: pending at log update.
+- Files changed: Social limiter metadata/guard, Friend and Block controllers/DTO/service, Presence service/gateway/contract documentation, and focused server tests.
+- Rate-limit policy: read `120/min`, lookup `30/min`, friend-request create `10/hour`, ordinary request mutation `60/hour`, and block/remove mutations `30/hour`, keyed independently per authenticated user/policy. Expired timestamps and empty keys are removed; the map stays capped at 10,000 keys.
+- DTO and rule updates: UUID pipes validate route IDs; request DTO validates receiver UUID; Friend Code is trimmed, uppercased, fixed-length/alphanumeric validated before indexed lookup; terminal request reopen refreshes `updatedAt`; pending lists order by latest activity.
+- Presence restart recovery: `PresenceService.onModuleInit` marks persisted `online`/`idle` records offline as the documented single-instance MVP recovery. Horizontal scaling still requires a lease/shared coordinator.
+- Multiple-device aggregation: every authenticated connection is active and publishes online. Idle is calculated from each socket activity timestamp; disconnecting one socket recalculates remaining sockets; offline grace starts only after the final socket disconnects.
+- REST contract: Friend Presence snapshots explicitly return `{ userId, status, updatedAt }`; raw Prisma entities and `lastSeenAt` variations no longer leak through the contract.
+- Tests added: read-rate policy isolation, startup recovery, normalized Presence response, plus terminal-request timestamp expectation. Server unit suite: 10/10 passing.
+- Commands executed:
+  - `npm run prisma:generate` — passed.
+  - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/our_companion_test npx prisma validate` — passed.
+  - `npm run build` — passed.
+  - `npm test -- --runInBand` — passed (5 suites, 10 tests).
+  - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/our_companion_test npm run test:e2e` — passed (1 suite, 1 test).
+  - `git diff --check` — passed.
+- Scripted Social lifecycle against real PostgreSQL: pending; no PostgreSQL service was available in this environment.
+- Manual two-client desktop smoke test: pending.
+- Remaining limitations: real two-account Social/Presence integration and manual desktop smoke testing remain required. S3 public identity/assets, S4 invitations, and S5 visual visits remain deferred.

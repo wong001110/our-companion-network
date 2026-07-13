@@ -13,8 +13,12 @@ export class FriendService {
   constructor(private prisma: PrismaService, private readonly events: SocialEventPublisher) {}
 
   async lookupByFriendCode(code: string, requesterId?: string) {
+    const normalizedCode = code.trim().toUpperCase();
+    if (!/^[A-Z0-9]{8}$/.test(normalizedCode)) {
+      throw new NotFoundException({ code: 'INVALID_FRIEND_CODE', message: 'Friend code was not found' });
+    }
     const user = await this.prisma.user.findUnique({
-      where: { friendCode: code },
+      where: { friendCode: normalizedCode },
       select: {
         id: true,
         username: true,
@@ -86,7 +90,7 @@ export class FriendService {
     const request = await this.prisma.friendRequest.upsert({
       where: { senderId_receiverId: { senderId, receiverId: dto.receiverId } },
       create: { senderId, receiverId: dto.receiverId, status: 'pending' },
-      update: { status: 'pending' },
+      update: { status: 'pending', updatedAt: new Date() },
       include: {
         sender: {
           select: { id: true, username: true },
@@ -111,7 +115,7 @@ export class FriendService {
         sender: { select: { id: true, username: true, friendCode: true },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { updatedAt: 'desc' },
     });
 
     return requests;
@@ -121,7 +125,7 @@ export class FriendService {
     return this.prisma.friendRequest.findMany({
       where: { senderId: userId, status: 'pending' },
       include: { receiver: { select: { id: true, username: true, friendCode: true } } },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { updatedAt: 'desc' },
     });
   }
 
