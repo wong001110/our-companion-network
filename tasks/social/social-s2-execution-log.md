@@ -18,6 +18,6 @@
   - `npm test -- --runInBand` — passed (6 suites, 19 tests).
   - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/our_companion_test npm run test:e2e` — passed (1 suite, 1 test).
   - `git diff --check` — passed.
-- Scripted Social lifecycle against real PostgreSQL: pending; no PostgreSQL service was available in this environment.
-- Manual two-client desktop smoke test: pending.
-- Remaining limitations: real two-account Social/Presence integration and manual desktop smoke testing remain required. S3 public identity/assets, S4 invitations, and S5 visual visits remain deferred.
+- Real two-account Social/Presence integration: exercised through the user-confirmed live two-client test on 2026-07-13.
+- Manual two-client desktop smoke test: completed and confirmed by the user on 2026-07-13.
+- Remaining limitations: S3 public identity/assets, S4 invitations, and S5 visual visits remain deferred.
