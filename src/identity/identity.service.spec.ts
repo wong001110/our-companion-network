@@ -40,4 +40,21 @@ describe('IdentityService logout', () => {
       data: { revokedAt: expect.any(Date) },
     }));
   });
+
+  it('retries a Friend Code collision while registering so each account keeps a unique code', async () => {
+    const create = jest.fn()
+      .mockRejectedValueOnce({ code: 'P2002', meta: { target: ['friendCode'] } })
+      .mockResolvedValueOnce({ id: 'user-1', email: 'ann@example.com', username: 'ann', friendCode: 'UNIQUE01', createdAt: new Date() });
+    const service = new IdentityService(
+      { user: { findFirst: jest.fn().mockResolvedValue(null), create }, deviceSession: { upsert: jest.fn() } } as never,
+      { signAsync: jest.fn().mockResolvedValue('token') } as never,
+      { get: jest.fn((key: string, fallback?: string) => key === 'JWT_REFRESH_EXPIRATION' ? '7d' : fallback) } as never,
+    );
+    jest.spyOn<any, any>(service as any, 'generateFriendCode').mockReturnValueOnce('DUPLICAT').mockReturnValueOnce('UNIQUE01');
+
+    await service.register({ email: 'ann@example.com', username: 'ann', password: 'password123', deviceId: 'device-1' });
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls.map(([input]) => input.data.friendCode)).toEqual(['DUPLICAT', 'UNIQUE01']);
+  });
 });

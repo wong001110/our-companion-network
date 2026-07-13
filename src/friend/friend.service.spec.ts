@@ -48,6 +48,32 @@ describe('FriendService S2 rules', () => {
     await expect(service.sendFriendRequest('user-a', { receiverId: 'user-b' })).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  it('marks a friend as viewable only when their active Companion is published with an asset pack', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        friend: {
+          id: 'friend-published', username: 'published', friendCode: 'PUBLISHED', profile: null,
+          activeNetworkCompanion: { published: true, visibility: 'friends_only', activeAssetPackId: 'pack-1' },
+        },
+      },
+      {
+        friend: {
+          id: 'friend-draft', username: 'draft', friendCode: 'DRAFT123', profile: null,
+          activeNetworkCompanion: { published: false, visibility: 'friends_only', activeAssetPackId: 'pack-2' },
+        },
+      },
+    ]);
+    const service = new FriendService({ friendship: { findMany } } as never, eventPublisher as never);
+
+    await expect(service.getFriends('user-a')).resolves.toEqual([
+      expect.objectContaining({ userId: 'friend-published', hasPublishedCompanion: true }),
+      expect.objectContaining({ userId: 'friend-draft', hasPublishedCompanion: false }),
+    ]);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      include: expect.objectContaining({ friend: expect.objectContaining({ select: expect.objectContaining({ activeNetworkCompanion: expect.anything() }) }) }),
+    }));
+  });
+
   it('rejects an existing friendship and a duplicate directed pending request', async () => {
     const base = {
       user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b' }) },

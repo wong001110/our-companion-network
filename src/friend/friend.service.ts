@@ -225,6 +225,13 @@ export class FriendService {
             id: true,
             username: true,
             friendCode: true,
+            activeNetworkCompanion: {
+              select: {
+                published: true,
+                visibility: true,
+                activeAssetPackId: true,
+              },
+            },
             profile: {
               select: {
                 displayName: true,
@@ -236,7 +243,23 @@ export class FriendService {
       },
     });
 
-    return friendships.map((f) => ({ ...f.friend, userId: f.friend.id }));
+    return friendships.map(({ friend }) => {
+      const companion = friend.activeNetworkCompanion;
+      return {
+        id: friend.id,
+        username: friend.username,
+        friendCode: friend.friendCode,
+        profile: friend.profile,
+        userId: friend.id,
+        // This is intentionally only a boolean: the friend must still pass the
+        // authorization check when their Companion is opened.
+        hasPublishedCompanion: Boolean(
+          companion?.published
+          && companion.visibility === 'friends_only'
+          && companion.activeAssetPackId,
+        ),
+      };
+    });
   }
 
   async removeFriend(userId: string, friendId: string) {

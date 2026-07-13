@@ -16,6 +16,6 @@
 - E2E meta contract: 1 suite / 1 test passed.
 - Live private R2 integration: 1 suite / 1 test passed (upload, metadata HEAD, download/hash, manifest, deletion).
 
-## Remaining limitation
+## Manual verification
 
-Two-client desktop smoke testing must be performed manually; no credentials, tokens, signed URLs, keys, or local paths are recorded here.
+- Two-client desktop smoke test passed: the owner and friend completed the online publish/download flow successfully on separate devices. No credentials, tokens, signed URLs, keys, or local paths are recorded here.

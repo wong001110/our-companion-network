@@ -29,15 +29,10 @@ export class IdentityService {
     if (existingUser) throw new ConflictException('Email or username already exists');
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    const user = await this.prisma.user.create({
-      data: {
-        email: dto.email,
-        username: dto.username,
-        passwordHash,
-        friendCode: this.generateFriendCode(),
-        profile: { create: { displayName: dto.username } },
-      },
-      select: { id: true, email: true, username: true, friendCode: true, createdAt: true },
+    const user = await this.createUserWithUniqueFriendCode({
+      email: dto.email,
+      username: dto.username,
+      passwordHash,
     });
 
     return { user, ...(await this.createSessionTokens(user.id, user.email, dto.deviceId)) };
@@ -164,5 +159,30 @@ export class IdentityService {
 
   private generateFriendCode(): string {
     return randomBytes(4).toString('hex').toUpperCase();
+  }
+
+  private async createUserWithUniqueFriendCode(input: { email: string; username: string; passwordHash: string }) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        return await this.prisma.user.create({
+          data: {
+            ...input,
+            friendCode: this.generateFriendCode(),
+            profile: { create: { displayName: input.username } },
+          },
+          select: { id: true, email: true, username: true, friendCode: true, createdAt: true },
+        });
+      } catch (error) {
+        if (!this.isFriendCodeConflict(error) || attempt === 4) throw error;
+      }
+    }
+    throw new ConflictException({ code: 'FRIEND_CODE_GENERATION_FAILED', message: 'Could not allocate a unique Friend Code. Please try again.' });
+  }
+
+  private isFriendCodeConflict(error: unknown): boolean {
+    const prismaError = error as { code?: string; meta?: { target?: unknown } };
+    const target = prismaError.meta?.target;
+    return prismaError.code === 'P2002'
+      && (Array.isArray(target) ? target.includes('friendCode') : target === 'friendCode');
   }
 }
