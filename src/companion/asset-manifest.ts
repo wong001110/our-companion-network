@@ -10,7 +10,7 @@ export interface CompanionAssetManifestV1 {
     defaultAnimation: 'Idle_Neutral';
     portraitPath?: string;
     iconPath?: string;
-    animations: Array<{ name: string; format: 'sprite_sheet' | 'frame_sequence' | 'gif' | 'static'; files: string[]; frameWidth?: number; frameHeight?: number; frameCount?: number; fps?: number; loop: boolean }>;
+    animations: Array<{ name: string; format: 'sprite_sheet' | 'frame_sequence' | 'gif' | 'static'; files: string[]; frameWidth?: number; frameHeight?: number; frameCount?: number; frameDurationMs?: number; loop: boolean }>;
   };
   files: Array<{ relativePath: string; category: AssetCategory; mimeType: string; sizeBytes: number; sha256: string }>;
 }
@@ -62,10 +62,10 @@ export function validateManifest(input: unknown, expectedHash: string, limits: M
     if (!animation.files.length) invalid('Asset pack animation mapping has no files');
     for (const filePath of animation.files) if (typeof filePath !== 'string' || !paths.has(filePath)) invalid('Asset pack animation references an unknown file');
     if (animation.format === 'sprite_sheet') {
-      const frameWidth = animation.frameWidth ?? 0; const frameHeight = animation.frameHeight ?? 0; const frameCount = animation.frameCount ?? 0; const fps = animation.fps ?? 0;
-      if (!Number.isSafeInteger(frameWidth) || !Number.isSafeInteger(frameHeight) || !Number.isSafeInteger(frameCount) || !Number.isSafeInteger(fps)
+      const frameWidth = animation.frameWidth ?? 0; const frameHeight = animation.frameHeight ?? 0; const frameCount = animation.frameCount ?? 0; const frameDurationMs = animation.frameDurationMs ?? 0;
+      if (!Number.isSafeInteger(frameWidth) || !Number.isSafeInteger(frameHeight) || !Number.isSafeInteger(frameCount) || !Number.isSafeInteger(frameDurationMs)
         || frameWidth < 300 || frameHeight < 300 || frameWidth > 4096 || frameHeight > 4096
-        || frameCount < 1 || frameCount > 120 || fps < 1 || fps > 120) invalid('Asset pack sprite metadata is invalid');
+        || frameCount < 1 || frameCount > 120 || frameDurationMs < 16 || frameDurationMs > 10_000) invalid('Asset pack sprite metadata is invalid');
       const file = manifest.files.find(candidate => candidate.relativePath === animation.files[0]);
       if (!file || file.mimeType !== 'image/png') invalid('Asset pack sprite sheet must reference a PNG asset');
     }

@@ -34,7 +34,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
   private readonly bucket?: string;
   private readonly uploadTtlSeconds: number;
   private readonly downloadTtlSeconds: number;
-  private readonly limitsValue: { maxFileBytes: number; maxPackBytes: number; maxPackFiles: number; uploadSessionTtlHours: number; maxUserStorageBytes: number };
+  private readonly limitsValue: { maxFileBytes: number; maxPackBytes: number; maxPackFiles: number; uploadSessionTtlHours: number; maxUserStorageBytes: number; supersededPackRetentionDays: number };
   private _capability: StorageCapability;
   private recoveryTimer?: NodeJS.Timeout;
 
@@ -46,16 +46,17 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     const maxPackFiles = configuredPositiveInt(config.get<string>('R2_MAX_ASSET_PACK_FILES'), 1000);
     const uploadSessionTtlHours = configuredPositiveInt(config.get<string>('R2_UPLOAD_SESSION_TTL_HOURS'), 24);
     const maxUserStorageBytes = configuredPositiveInt(config.get<string>('R2_MAX_USER_STORAGE_BYTES'), 2 * 1024 * 1024 * 1024);
+    const supersededPackRetentionDays = configuredPositiveInt(config.get<string>('R2_SUPERSEDED_PACK_RETENTION_DAYS'), 30);
     this.uploadTtlSeconds = uploadTtlSeconds ?? 900;
     this.downloadTtlSeconds = downloadTtlSeconds ?? 900;
-    this.limitsValue = { maxFileBytes: maxFileBytes ?? 20 * 1024 * 1024, maxPackBytes: maxPackBytes ?? 500 * 1024 * 1024, maxPackFiles: maxPackFiles ?? 1000, uploadSessionTtlHours: uploadSessionTtlHours ?? 24, maxUserStorageBytes: maxUserStorageBytes ?? 2 * 1024 * 1024 * 1024 };
+    this.limitsValue = { maxFileBytes: maxFileBytes ?? 20 * 1024 * 1024, maxPackBytes: maxPackBytes ?? 500 * 1024 * 1024, maxPackFiles: maxPackFiles ?? 1000, uploadSessionTtlHours: uploadSessionTtlHours ?? 24, maxUserStorageBytes: maxUserStorageBytes ?? 2 * 1024 * 1024 * 1024, supersededPackRetentionDays: supersededPackRetentionDays ?? 30 };
     const accountId = config.get<string>('CLOUDFLARE_ACCOUNT_ID')?.trim();
     const bucket = config.get<string>('R2_BUCKET_NAME')?.trim();
     const accessKeyId = config.get<string>('R2_ACCESS_KEY_ID')?.trim();
     const secretAccessKey = config.get<string>('R2_SECRET_ACCESS_KEY')?.trim();
     const endpoint = config.get<string>('R2_ENDPOINT')?.trim();
     const endpointValid = endpoint ? validEndpoint(endpoint) : false;
-    const limitsValid = Boolean(uploadTtlSeconds && downloadTtlSeconds && maxFileBytes && maxPackBytes && maxPackFiles && uploadSessionTtlHours && maxUserStorageBytes);
+    const limitsValid = Boolean(uploadTtlSeconds && downloadTtlSeconds && maxFileBytes && maxPackBytes && maxPackFiles && uploadSessionTtlHours && maxUserStorageBytes && supersededPackRetentionDays);
     const configured = Boolean(accountId && bucket && accessKeyId && secretAccessKey && endpointValid && limitsValid);
     this._capability = { configured, provider: 'cloudflare_r2', uploadsEnabled: false, downloadsEnabled: false };
     if (!configured || !endpoint || !bucket || !accessKeyId || !secretAccessKey) return;
@@ -131,7 +132,12 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
   async deleteObjects(objectKeys: string[]): Promise<void> {
     this.requireAvailable();
     if (!objectKeys.length) return;
-    try { await this.client!.send(new DeleteObjectsCommand({ Bucket: this.bucket!, Delete: { Objects: objectKeys.map(Key => ({ Key })), Quiet: true } })); }
+    try {
+      const result = await this.client!.send(new DeleteObjectsCommand({ Bucket: this.bucket!, Delete: { Objects: objectKeys.map(Key => ({ Key })), Quiet: true } }));
+      // S3-compatible APIs can report a successful request with per-object errors.
+      // Keep the lifecycle claim intact so the next cleanup pass retries safely.
+      if (result.Errors?.length) throw new Error('ASSET_STORAGE_DELETE_INCOMPLETE');
+    }
     catch (error) { this.markUnavailable(); throw error; }
   }
 

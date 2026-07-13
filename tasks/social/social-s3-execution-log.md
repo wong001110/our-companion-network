@@ -1,9 +1,21 @@
-# S3 execution log
+# Social S3 execution log
 
-- Baseline: `0ee9e9331c38726907674aff8a160fb66b70d226`
-- Protocol: `0.2`; migration: `20260713000000_s3_public_companions`.
-- Added Network Companion and immutable Asset Pack/File metadata, server-generated private R2 keys, presigned URL batches, object verification, activation, friends-only profile/download authorization and invalidation events.
-- R2 environment variable names only: `CLOUDFLARE_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_REGION`.
-- Completed locally: applied the migration to local PostgreSQL after recording the already-present S0-S2 schema migrations; Prisma generate/validate/status, Nest build, unit suite (8 passing suites / 31 passing tests; opt-in integration skipped), metadata E2E suite (1 suite / 1 test), and diff check.
-- Added and passed an opt-in private R2 integration test using `RUN_R2_INTEGRATION=1`: disposable prefix PUT, HeadObject, GET/hash verification, manifest write and cleanup. Presigned PUTs require the signed `content-type` and `x-amz-meta-sha256` headers.
-- Not run: two-client S3 smoke. S4-S5 are deferred.
+- Baseline: `6f9d9c3b7dd556a957c8032118ceecd2de5e0379`.
+- Complete uses one `{ assetPack, companion }` response envelope for upload, verification, and active retry paths.
+- An already-active completion retry returns that envelope before checking current R2 readiness.
+- Cleanup claims retired packs as `deleting` and expired uploads as `abandoning` before object deletion. A deletion failure remains claimed and is retried safely later.
+- Per-object R2 bulk-delete errors are treated as deletion failures, not successful cleanup.
+- Reactivation accepts only `active` and `superseded`; claimed deletion states cannot be reactivated.
+- R2 retention reads validated `R2_SUPERSEDED_PACK_RETENTION_DAYS`.
+
+## Verification
+
+- Prisma generation and schema validation passed.
+- Network build passed.
+- Full unit suite: 9 suites passed, 36 tests passed; one opt-in integration suite skipped in the normal run.
+- E2E meta contract: 1 suite / 1 test passed.
+- Live private R2 integration: 1 suite / 1 test passed (upload, metadata HEAD, download/hash, manifest, deletion).
+
+## Remaining limitation
+
+Two-client desktop smoke testing must be performed manually; no credentials, tokens, signed URLs, keys, or local paths are recorded here.

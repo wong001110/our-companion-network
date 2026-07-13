@@ -13,5 +13,16 @@ describe('StorageService configuration', () => {
   it('fails closed for an invalid endpoint or TTL without exposing configuration values', () => {
     expect(new StorageService(config({ R2_ENDPOINT: 'not-a-url' }) as never).capability.configured).toBe(false);
     expect(new StorageService(config({ R2_UPLOAD_URL_TTL_SECONDS: '0' }) as never).capability.configured).toBe(false);
+    expect(new StorageService(config({ R2_SUPERSEDED_PACK_RETENTION_DAYS: '0' }) as never).capability.configured).toBe(false);
+  });
+  it('uses the configured superseded pack retention', () => {
+    expect(new StorageService(config({ R2_SUPERSEDED_PACK_RETENTION_DAYS: '7' }) as never).limits.supersededPackRetentionDays).toBe(7);
+  });
+  it('fails a bulk delete with per-object errors and marks storage unavailable for recovery', async () => {
+    const service = new StorageService(config() as never);
+    (service as any)._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: true, downloadsEnabled: true };
+    (service as any).client = { send: jest.fn().mockResolvedValue({ Errors: [{ Code: 'InternalError' }] }) };
+    await expect(service.deleteObjects(['opaque-key'])).rejects.toThrow('ASSET_STORAGE_DELETE_INCOMPLETE');
+    expect(service.capability.uploadsEnabled).toBe(false);
   });
 });

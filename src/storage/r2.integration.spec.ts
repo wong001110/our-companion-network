@@ -13,7 +13,7 @@ describeIntegration('private Cloudflare R2 integration', () => {
   const storage = new StorageService({ get: (key: string, fallback?: string) => process.env[key] ?? fallback } as never);
 
   beforeAll(async () => { await storage.onModuleInit(); });
-  afterAll(async () => { await storage.deleteObjects([objectKey, manifestKey]).catch(() => undefined); });
+  afterAll(async () => { await storage.deleteObjects([objectKey, manifestKey]).catch(() => undefined); storage.onModuleDestroy(); });
 
   it('uploads, heads, downloads, writes a manifest and cleans up through private presigned URLs', async () => {
     expect(storage.capability.uploadsEnabled).toBe(true);
