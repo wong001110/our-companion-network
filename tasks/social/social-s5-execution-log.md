@@ -15,3 +15,10 @@
 - Network harness SHA: `6a5eeaa9b4bb4da744b164d1cb8b4419bb98fcea`.
 - Cleanup validates the current smoke-run namespace, deletes only associated `@example.invalid` test users, Visit records, Pack records, and the exact linked R2 object keys. It is not a general-purpose data endpoint.
 - Network unit suite and build pass; the logical two-device live R2 run remains pending dedicated test credentials and database authorization.
+
+## Automated two-device smoke harness closure
+
+- Network implementation commit: `717c37e8bd17b8b79a385b7321990160022e0825`.
+- Cleanup is now hidden unless all dedicated smoke flags, a valid non-production database URL, and the exact `X-Smoke-Test-Token` are present. It deletes every associated Pack file object and manifest once, then returns sanitized counts.
+- Managed smoke startup validates/prepares the dedicated database, runs migrations, checks protocol `0.4`, `visualVisits`, and R2 capabilities before registration.
+- The live two-device S5 smoke run passed with cleanup confirmed: [sanitized report](/Users/wongjuenan/Desktop/Self%20Project/our-companion/client/artifacts/s5-two-device/1784015385399-f83f5da6b17f/report.json).
