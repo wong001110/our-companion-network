@@ -24,3 +24,4 @@
 - The live two-device S5 smoke run passed with cleanup confirmed: [sanitized report](/Users/wongjuenan/Desktop/Self%20Project/our-companion/client/artifacts/s5-two-device/1784015385399-f83f5da6b17f/report.json).
 - PostgreSQL integration verification passed: 87/88 tests with integrations enabled (the live R2 suite is run separately by design). HTTP E2E passed 3/3.
 - Private R2 integration passed 1/1: presigned upload, HEAD metadata, download, manifest write, and deletion were exercised with a randomized integration prefix.
+- Final committed-revision rerun (Client `ac856d9`, Network `61496f7`) passed with all checks and remote cleanup confirmed: [sanitized report](/Users/wongjuenan/Desktop/Self%20Project/our-companion/client/artifacts/s5-two-device/1784015867906-fa763ea53988/report.json).
