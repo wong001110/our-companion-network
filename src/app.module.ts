@@ -15,6 +15,7 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { MetaModule } from './meta/meta.module';
 import { StorageModule } from './storage/storage.module';
 import { CompanionModule } from './companion/companion.module';
+import { SmokeModule } from './smoke/smoke.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { CompanionModule } from './companion/companion.module';
     NotificationModule,
     CommunityModule,
     CompanionModule,
+    SmokeModule,
   ],
   providers: [
     {
