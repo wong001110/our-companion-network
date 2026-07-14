@@ -15,6 +15,17 @@ export interface CompanionAssetManifestV1 {
   files: Array<{ relativePath: string; category: AssetCategory; mimeType: string; sizeBytes: number; sha256: string }>;
 }
 
+/** Animations a snapshot Pack must provide before it can back an S5 Visual Visit. */
+export const VISUAL_VISIT_REQUIRED_ANIMATIONS = [
+  'Idle_Neutral',
+  'Enter',
+  'Leave',
+  'Walk_Left',
+  'Walk_Right',
+  'Walk_Up',
+  'Walk_Down',
+] as const;
+
 const ALLOWED_EXTENSIONS: Record<string, { mimeType: string; category: AssetCategory[] }> = {
   '.png': { mimeType: 'image/png', category: ['animation', 'portrait', 'icon'] },
   '.jpg': { mimeType: 'image/jpeg', category: ['animation', 'portrait', 'icon'] },
@@ -90,6 +101,21 @@ export function canonicalManifest(manifest: CompanionAssetManifestV1): Companion
     },
     files: [...manifest.files].sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
   };
+}
+
+/**
+ * This intentionally checks only the immutable, already-validated Pack
+ * manifest. Diagonal walking animations remain optional in S5.
+ */
+export function supportsVisualVisit(manifest: unknown): manifest is CompanionAssetManifestV1 {
+  if (!isRecord(manifest) || !isRecord(manifest.runtime) || !Array.isArray(manifest.runtime.animations)) return false;
+  const names = new Set(
+    manifest.runtime.animations
+      .filter(isRecord)
+      .map((animation) => animation.name)
+      .filter((name): name is string => typeof name === 'string'),
+  );
+  return VISUAL_VISIT_REQUIRED_ANIMATIONS.every((name) => names.has(name));
 }
 
 export function canonicalJsonStringify(value: unknown): string {

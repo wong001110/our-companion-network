@@ -2,7 +2,9 @@ import { CompanionService } from './companion.service';
 import { createHash } from 'node:crypto';
 import { canonicalJsonStringify, canonicalManifest } from './asset-manifest';
 
-const now = new Date('2026-07-13T00:00:00.000Z');
+// Upload-session tests must remain within their configured TTL regardless of
+// when the suite is run.
+const now = new Date();
 const activePack = { id: 'pack-1', companionId: 'companion-1', status: 'active', manifestHash: 'a'.repeat(64), schemaVersion: 1, totalFiles: 1, totalBytes: BigInt(1), createdAt: now, updatedAt: now, completedAt: now, activatedAt: now, supersededAt: null, failureCode: null, companion: { ownerUserId: 'user-1' }, files: [] };
 
 function uploadPack(status: 'uploading' | 'verifying' | 'abandoning' = 'uploading') {

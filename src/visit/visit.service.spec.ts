@@ -1,5 +1,6 @@
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { VisitService } from './visit.service';
+import { VISUAL_VISIT_REQUIRED_ANIMATIONS } from '../companion/asset-manifest';
 
 const now = new Date('2026-07-13T12:00:00.000Z');
 const owner = '11111111-1111-4111-8111-111111111111';
@@ -8,6 +9,8 @@ const invitationId = '33333333-3333-4333-8333-333333333333';
 const sessionId = '44444444-4444-4444-8444-444444444444';
 const companionId = '55555555-5555-4555-8555-555555555555';
 const packId = '66666666-6666-4666-8666-666666666666';
+
+const visualManifest = (omitted?: string) => ({ runtime: { animations: VISUAL_VISIT_REQUIRED_ANIMATIONS.filter(name => name !== omitted).map(name => ({ name })) } });
 
 function invitation(status = 'pending') {
   return { id: invitationId, visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackSnapshotId: packId, assetPackRefId: status === 'pending' ? packId : null, companionName: 'Ann', companionDescription: 'Public', companionTags: ['kind'], status, expiresAt: new Date(now.getTime() + 60_000), respondedAt: null, cancelledAt: null, createdAt: now, updatedAt: now };
@@ -38,7 +41,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
       visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue(created) },
       user: { findUnique: jest.fn().mockResolvedValue({ activeNetworkCompanionId: companionId }) },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, ownerUserId: owner, name: 'Ann', publicDescription: 'Public', publicTags: ['kind'], published: true, visibility: 'friends_only', activeAssetPackId: packId }) },
-      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active' }) },
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest() }) },
     };
     const prisma = {
       $transaction: jest.fn((operation) => operation(tx)),
@@ -47,6 +50,32 @@ describe('VisitService S4 lifecycle and privacy', () => {
     await expect(instance.createInvitation(owner, host)).resolves.toMatchObject({ id: invitationId, assetPackId: packId, companionName: 'Ann', companionTags: ['kind'] });
     expect(tx.visitInvitation.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackSnapshotId: packId, assetPackRefId: packId }) }));
     expect(events.publishToUser).toHaveBeenCalledWith(owner, 'visit.invitation.created', { invitationId });
+  });
+
+  it('rejects invitation creation when the immutable snapshot lacks a required Visual Visit animation', async () => {
+    const tx = {
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      visitSession: { findFirst: jest.fn().mockResolvedValue(null) }, visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      user: { findUnique: jest.fn().mockResolvedValue({ activeNetworkCompanionId: companionId }) },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, ownerUserId: owner, name: 'Ann', publicDescription: 'Public', publicTags: ['kind'], published: true, visibility: 'friends_only', activeAssetPackId: packId }) },
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest('Walk_Left') }) },
+    };
+    const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
+    await expect(instance.createInvitation(owner, host)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'VISIT_VISUAL_ASSETS_UNAVAILABLE' }) });
+    expect(tx.visitInvitation.create).not.toHaveBeenCalled();
+  });
+
+  it('rechecks Visual Visit compatibility when the host accepts an invitation', async () => {
+    const tx = {
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      visitSession: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
+      networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, published: true, visibility: 'friends_only' }) },
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest('Walk_Right') }) },
+    };
+    const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
+    await expect(instance.acceptInvitation(host, invitationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'VISIT_VISUAL_ASSETS_UNAVAILABLE' }) });
+    expect(tx.visitInvitation.update).not.toHaveBeenCalled();
   });
 
   it('returns an already accepted invitation and its existing single session', async () => {

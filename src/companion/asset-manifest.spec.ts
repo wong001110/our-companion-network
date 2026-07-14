@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
-import { canonicalJsonStringify, canonicalManifest, validateManifest, type CompanionAssetManifestV1 } from './asset-manifest';
+import { canonicalJsonStringify, canonicalManifest, supportsVisualVisit, validateManifest, type CompanionAssetManifestV1, VISUAL_VISIT_REQUIRED_ANIMATIONS } from './asset-manifest';
 
 const hash = (value: unknown) => createHash('sha256').update(canonicalJsonStringify(value), 'utf8').digest('hex');
 const limits = { maxFileBytes: 100, maxPackBytes: 500, maxPackFiles: 10 };
 function manifest(): CompanionAssetManifestV1 {
   const files = ['Idle_Neutral', 'Enter', 'Leave'].map(name => ({ relativePath: `assets/animations/${name}.png`, category: 'animation' as const, mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64) }));
   return { format: 'our-companion-asset-pack', schemaVersion: 1, runtime: { defaultAnimation: 'Idle_Neutral', animations: ['Leave', 'Enter', 'Idle_Neutral'].map(name => ({ name, format: 'sprite_sheet' as const, files: [`assets/animations/${name}.png`], frameWidth: 300, frameHeight: 300, frameCount: 1, frameDurationMs: 180, loop: name === 'Idle_Neutral' })) }, files };
+}
+
+function visualManifest(omitted?: string): CompanionAssetManifestV1 {
+  const names = VISUAL_VISIT_REQUIRED_ANIMATIONS.filter((name) => name !== omitted);
+  const files = names.map(name => ({ relativePath: `assets/animations/${name}.png`, category: 'animation' as const, mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64) }));
+  return { format: 'our-companion-asset-pack', schemaVersion: 1, runtime: { defaultAnimation: 'Idle_Neutral', animations: names.map(name => ({ name, format: 'sprite_sheet' as const, files: [`assets/animations/${name}.png`], frameWidth: 300, frameHeight: 300, frameCount: 1, frameDurationMs: 180, loop: name === 'Idle_Neutral' })) }, files };
 }
 
 describe('Asset Pack manifest validation', () => {
@@ -36,5 +42,10 @@ describe('Asset Pack manifest validation', () => {
     expect(() => validateManifest(missing, hash(missing), limits)).toThrow('sprite metadata');
     const invalid = manifest(); invalid.runtime.animations[0].frameDurationMs = 0;
     expect(() => validateManifest(invalid, hash(invalid), limits)).toThrow('sprite metadata');
+  });
+  it('requires the S5 cardinal movement set but keeps diagonal movement optional', () => {
+    expect(supportsVisualVisit(visualManifest())).toBe(true);
+    expect(supportsVisualVisit(visualManifest('Idle_Neutral'))).toBe(false);
+    expect(supportsVisualVisit(visualManifest('Walk_Down'))).toBe(false);
   });
 });

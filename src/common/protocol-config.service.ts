@@ -15,13 +15,13 @@ export class ProtocolConfigService {
     presence: true,
     visitInvitations: true,
     visitSessions: true,
-    visualVisits: false,
+    visualVisits: true,
   } as const;
 
   constructor(config: ConfigService, private readonly storage?: StorageService, private readonly visits: VisitConfigService = new VisitConfigService(config)) {
-    this.protocolVersion = config.get<string>('PROTOCOL_VERSION', '0.3');
-    this.minimumClientVersion = config.get<string>('MINIMUM_CLIENT_VERSION', '0.3.0');
-    this.serverVersion = config.get<string>('SERVER_VERSION', '0.3.0');
+    this.protocolVersion = config.get<string>('PROTOCOL_VERSION', '0.4');
+    this.minimumClientVersion = config.get<string>('MINIMUM_CLIENT_VERSION', '0.4.0');
+    this.serverVersion = config.get<string>('SERVER_VERSION', '0.4.0');
   }
 
   get storageCapability(): StorageCapability {
@@ -30,7 +30,7 @@ export class ProtocolConfigService {
 
   get features() {
     const enabled = this.storageCapability.uploadsEnabled && this.storageCapability.downloadsEnabled;
-    return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled, visitInvitations: enabled, visitSessions: enabled } as const;
+    return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled, visitInvitations: enabled, visitSessions: enabled, visualVisits: enabled } as const;
   }
 
   get visitRuntimeConfig() {

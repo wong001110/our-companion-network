@@ -5,17 +5,17 @@ describe('ProtocolConfigService', () => {
   const config = (values: Record<string, string> = {}) => ({ get: jest.fn((key: string, fallback: string) => values[key] ?? fallback) });
 
   it('uses one configured protocol source for compatibility decisions', () => {
-    const service = new ProtocolConfigService(config({ PROTOCOL_VERSION: '0.3', MINIMUM_CLIENT_VERSION: '1.4.0', SERVER_VERSION: '7.0.0' }) as never);
-    expect(service.protocolVersion).toBe('0.3');
+    const service = new ProtocolConfigService(config({ PROTOCOL_VERSION: '0.4', MINIMUM_CLIENT_VERSION: '1.4.0', SERVER_VERSION: '7.0.0' }) as never);
+    expect(service.protocolVersion).toBe('0.4');
     expect(service.minimumClientVersion).toBe('1.4.0');
-    expect(service.isCompatible('1.4.0', '0.3')).toEqual({ compatible: true });
-    expect(service.isCompatible('1.3.9', '0.3')).toEqual({ compatible: false, reason: 'CLIENT_VERSION_TOO_OLD' });
+    expect(service.isCompatible('1.4.0', '0.4')).toEqual({ compatible: true });
+    expect(service.isCompatible('1.3.9', '0.4')).toEqual({ compatible: false, reason: 'CLIENT_VERSION_TOO_OLD' });
     expect(service.isCompatible('1.4.0', '0.1')).toEqual({ compatible: false, reason: 'UNSUPPORTED_PROTOCOL_VERSION' });
   });
 
   it('does not advertise Visit endpoints when R2 transfers are unavailable', () => {
     const service = new ProtocolConfigService(config() as never, { capability: { configured: false, provider: 'cloudflare_r2', uploadsEnabled: false, downloadsEnabled: false } } as never);
-    expect(service.features).toMatchObject({ publicCompanions: false, assetPacks: false, visitInvitations: false, visitSessions: false });
+    expect(service.features).toMatchObject({ publicCompanions: false, assetPacks: false, visitInvitations: false, visitSessions: false, visualVisits: false });
   });
 
   it('exposes the same safe Visit runtime limits used by VisitService', () => {

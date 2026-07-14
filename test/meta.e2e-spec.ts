@@ -7,7 +7,7 @@ import { StorageModule } from '../src/storage/storage.module';
 import { VisitConfigService } from '../src/common/visit-config.service';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => ({ PROTOCOL_VERSION: '0.3', MINIMUM_CLIENT_VERSION: '0.3.0', SERVER_VERSION: '0.3.0' })] }), StorageModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => ({ PROTOCOL_VERSION: '0.4', MINIMUM_CLIENT_VERSION: '0.4.0', SERVER_VERSION: '0.4.0' })] }), StorageModule],
   controllers: [MetaController],
   providers: [ProtocolConfigService, VisitConfigService],
 })
@@ -31,11 +31,11 @@ describe('Meta HTTP contract (e2e)', () => {
   it('serves health and rejects an old client through the compatibility endpoint', async () => {
     const health = await fetch(`${baseUrl}/api/meta/health`);
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ status: 'ok', protocolVersion: '0.3' });
+    expect(await health.json()).toEqual({ status: 'ok', protocolVersion: '0.4' });
 
     const compatibility = await fetch(`${baseUrl}/api/meta/client-compatibility`, { headers: {
       'x-our-companion-client-version': '0.0.9',
-      'x-our-companion-protocol-version': '0.3',
+      'x-our-companion-protocol-version': '0.4',
     } });
     expect(compatibility.status).toBe(200);
     const payload = await compatibility.json();

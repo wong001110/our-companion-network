@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
 import { VisitConfigService } from '../common/visit-config.service';
+import { supportsVisualVisit } from '../companion/asset-manifest';
 
 const PENDING = 'pending';
 const INVITATION_TERMINAL = ['accepted', 'declined', 'cancelled', 'expired'];
@@ -43,6 +44,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       await this.assertNoLiveSession(tx, visitorOwnerUserId, hostUserId);
       const snapshot = await this.loadCurrentSnapshotInTransaction(tx, visitorOwnerUserId);
       if (!snapshot) this.notAvailable();
+      if (!supportsVisualVisit(snapshot.pack.manifest)) this.visualAssetsUnavailable();
       const existing = await tx.visitInvitation.findFirst({ where: { visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id, status: PENDING, expiresAt: { gt: new Date() } }, select: INVITATION_SELECT });
       if (existing) throw new ConflictException({ code: 'VISIT_INVITATION_ALREADY_EXISTS', message: 'An equivalent Visit invitation is already pending' });
       return tx.visitInvitation.create({ data: {
@@ -72,8 +74,9 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       await this.lockCompanion(tx, invitation.networkCompanionId);
       const companion = await tx.networkCompanion.findUnique({ where: { id: invitation.networkCompanionId }, select: { id: true, published: true, visibility: true } });
       if (!companion || !companion.published || companion.visibility !== 'friends_only' || !invitation.assetPackRefId) this.notAvailable();
-      const pack = await tx.companionAssetPack.findUnique({ where: { id: invitation.assetPackRefId }, select: { id: true, companionId: true, status: true } });
+      const pack = await tx.companionAssetPack.findUnique({ where: { id: invitation.assetPackRefId }, select: { id: true, companionId: true, status: true, manifest: true } });
       if (!pack || pack.id !== invitation.assetPackSnapshotId || pack.companionId !== invitation.networkCompanionId || !['active', 'superseded'].includes(pack.status)) this.notAvailable();
+      if (!supportsVisualVisit(pack.manifest)) this.visualAssetsUnavailable();
       const accepted = await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'accepted', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
       const session = await tx.visitSession.create({ data: {
         invitationId: invitation.id, visitorOwnerUserId: invitation.visitorOwnerUserId, hostUserId: invitation.hostUserId,
@@ -280,7 +283,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     const companion = await tx.networkCompanion.findUnique({ where: { id: owner.activeNetworkCompanionId }, select: { id: true, ownerUserId: true, name: true, publicDescription: true, publicTags: true, visibility: true, published: true, activeAssetPackId: true } });
     if (!companion || companion.ownerUserId !== ownerId || !companion.published || companion.visibility !== 'friends_only' || !companion.activeAssetPackId) return undefined;
     await tx.$queryRaw`SELECT "id" FROM "CompanionAssetPack" WHERE "id" = ${companion.activeAssetPackId} FOR UPDATE`;
-    const pack = await tx.companionAssetPack.findUnique({ where: { id: companion.activeAssetPackId }, select: { id: true, companionId: true, status: true } });
+    const pack = await tx.companionAssetPack.findUnique({ where: { id: companion.activeAssetPackId }, select: { id: true, companionId: true, status: true, manifest: true } });
     if (!pack || pack.companionId !== companion.id || pack.status !== 'active') return undefined;
     return { companion, pack };
   }
@@ -317,5 +320,6 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   private get limits() { return this.visitConfig.limits; }
   private requireFeature() { if (!this.storage.capability.uploadsEnabled || !this.storage.capability.downloadsEnabled) throw new ServiceUnavailableException({ code: 'VISIT_FEATURE_UNAVAILABLE', message: 'Visit feature is unavailable' }); }
   private notAvailable(): never { throw new ConflictException({ code: 'VISIT_INVITATION_NOT_AVAILABLE', message: 'Visit invitation is not available' }); }
+  private visualAssetsUnavailable(): never { throw new ConflictException({ code: 'VISIT_VISUAL_ASSETS_UNAVAILABLE', message: 'Visit visual assets are unavailable' }); }
   private assetNotAvailable(): never { throw new NotFoundException({ code: 'VISIT_ASSET_NOT_AVAILABLE', message: 'Visit Asset Pack is not available' }); }
 }
