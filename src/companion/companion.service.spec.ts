@@ -20,6 +20,16 @@ function uploadPack(status: 'uploading' | 'verifying' | 'abandoning' = 'uploadin
 }
 
 describe('CompanionService final asset-pack lifecycle', () => {
+  it('keeps internal asset file BigInts out of public Pack responses', () => {
+    const service = new CompanionService({} as never, {} as never, {} as never);
+    const pack = (service as any).pack({
+      id: 'pack-1', totalBytes: BigInt(300), createdAt: now, updatedAt: now,
+      files: [{ id: 'file-1', sizeBytes: BigInt(300) }],
+    });
+    expect(pack.files).toBeUndefined();
+    expect(JSON.stringify(pack)).toContain('"totalBytes":300');
+  });
+
   it('returns the stable completion envelope when an active completion is retried', async () => {
     const prisma = { companionAssetPack: { findUnique: jest.fn().mockResolvedValue(activePack) }, networkCompanion: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'companion-1', ownerUserId: 'user-1', name: 'Ann', publicDescription: null, publicTags: [], visibility: 'friends_only', published: false, activeAssetPackId: 'pack-1', createdAt: now, updatedAt: now, publishedAt: null }) } };
     const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: {} } as never, {} as never);

@@ -10,6 +10,22 @@ function contextFor(userId: string, policy: string): ExecutionContext {
 }
 
 describe('SocialRateLimitGuard', () => {
+  afterEach(() => {
+    delete process.env.OUR_COMPANION_SMOKE_TEST;
+    delete process.env.SMOKE_TEST_ALLOW_DESTRUCTIVE_ENDPOINTS;
+    delete process.env.SMOKE_TEST_DATABASE;
+  });
+
+  it('bypasses limits only for the fully guarded destructive smoke runtime', () => {
+    process.env.OUR_COMPANION_SMOKE_TEST = '1';
+    process.env.SMOKE_TEST_ALLOW_DESTRUCTIVE_ENDPOINTS = '1';
+    process.env.SMOKE_TEST_DATABASE = '1';
+    const reflector = { getAllAndOverride: jest.fn().mockReturnValue('read') };
+    const guard = new SocialRateLimitGuard(reflector as never);
+    for (let attempt = 0; attempt < 130; attempt += 1) expect(guard.canActivate(contextFor('smoke-user', 'read'))).toBe(true);
+    expect((guard as any).attempts.size).toBe(0);
+  });
+
   it('allows normal repeated read synchronization without consuming mutation capacity', () => {
     const reflector = { getAllAndOverride: jest.fn().mockReturnValue('read') };
     const guard = new SocialRateLimitGuard(reflector as never);

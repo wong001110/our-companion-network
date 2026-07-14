@@ -26,6 +26,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
           ? exceptionResponse
           : (exceptionResponse as any).message || message;
       code = this.errorCode(status, exceptionResponse);
+    } else if (process.env.OUR_COMPANION_SMOKE_TEST === '1') {
+      const diagnostic = exception instanceof Error ? exception.message : 'Unknown request exception';
+      // The full smoke harness needs a bounded, credential-redacted diagnostic for unexpected 500s.
+      console.error(`[smoke] unexpected request failure: ${diagnostic.replace(/\w+:\/\/[^\s]+/g, '[REDACTED_URL]').slice(0, 500)}`);
     }
 
     response.status(status).json({

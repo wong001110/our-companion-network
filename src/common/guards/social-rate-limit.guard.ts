@@ -27,6 +27,9 @@ export class SocialRateLimitGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
+    if (process.env.OUR_COMPANION_SMOKE_TEST === '1'
+      && process.env.SMOKE_TEST_ALLOW_DESTRUCTIVE_ENDPOINTS === '1'
+      && process.env.SMOKE_TEST_DATABASE === '1') return true;
     const request = context.switchToHttp().getRequest<{ user?: { id?: string } }>();
     const policy = this.reflector.getAllAndOverride<SocialRateLimitPolicy>(SOCIAL_RATE_LIMIT_POLICY, [
       context.getHandler(),

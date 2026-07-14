@@ -432,7 +432,12 @@ export class CompanionService {
     return { name, publicDescription, publicTags: tags };
   }
   private publicProfile(companion: any) { return { ...companion, activeAssetPackId: companion.activeAssetPackId ?? undefined, publicDescription: companion.publicDescription ?? undefined, publishedAt: companion.publishedAt?.toISOString(), createdAt: companion.createdAt.toISOString(), updatedAt: companion.updatedAt.toISOString() }; }
-  private pack(pack: any) { return { ...pack, totalBytes: Number(pack.totalBytes), createdAt: pack.createdAt.toISOString(), updatedAt: pack.updatedAt.toISOString(), completedAt: pack.completedAt?.toISOString(), activatedAt: pack.activatedAt?.toISOString(), supersededAt: pack.supersededAt?.toISOString() }; }
+  private pack(pack: any) {
+    // File rows are internal upload bookkeeping and contain Prisma BigInt values.
+    // API callers receive their IDs separately, so never serialize these rows here.
+    const { files: _files, ...publicPack } = pack;
+    return { ...publicPack, totalBytes: Number(publicPack.totalBytes), createdAt: publicPack.createdAt.toISOString(), updatedAt: publicPack.updatedAt.toISOString(), completedAt: publicPack.completedAt?.toISOString(), activatedAt: publicPack.activatedAt?.toISOString(), supersededAt: publicPack.supersededAt?.toISOString() };
+  }
   private manifestFromPack(pack: any) { return pack.manifest; }
   private async areEligibleFriends(userId: string, otherUserId: string): Promise<boolean> { if (userId === otherUserId) return true; const [friendship, block] = await Promise.all([this.prisma.friendship.findUnique({ where: { userId_friendId: { userId, friendId: otherUserId } } }), this.prisma.blockedUser.findFirst({ where: { OR: [{ blockerId: userId, blockedId: otherUserId }, { blockerId: otherUserId, blockedId: userId }] } })]); return Boolean(friendship) && !block; }
   private async publishInvalidation(ownerUserId: string, event: string, payload: Record<string, string>) { this.events.publishToUser(ownerUserId, event, payload); const friends = await this.prisma.friendship.findMany({ where: { userId: ownerUserId }, select: { friendId: true } }); for (const friend of friends) if (await this.areEligibleFriends(ownerUserId, friend.friendId)) this.events.publishToUser(friend.friendId, event, payload); }
