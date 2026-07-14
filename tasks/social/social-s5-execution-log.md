@@ -1,7 +1,7 @@
 # Social S5 execution log
 
 - Previous baseline: `d09516f2041ffb66c446e63f0e2920aaefaab391`.
-- New Network SHA: pending final S5 commit.
+- Network implementation SHA: `0443e6424e3263037710175a8bbd9e02733ebec3`.
 - Protocol: `0.4` / `0.4.0`; `visualVisits` is capability-gated by private asset transfers.
 - Asset contract: creation and acceptance both validate the immutable snapshot Pack for the required S5 animation set. Diagonals remain optional. Missing assets return `VISIT_VISUAL_ASSETS_UNAVAILABLE`.
 - No server-side movement or remote AI/private-state synchronization was added.
