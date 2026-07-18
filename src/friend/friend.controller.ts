@@ -20,6 +20,12 @@ import { SocialRateLimit } from '../common/decorators/social-rate-limit.decorato
 export class FriendController {
   constructor(private readonly friendService: FriendService) {}
 
+  @Get('lookup/uid/:uid')
+  @SocialRateLimit('lookup')
+  async lookupByUid(@CurrentUser() user: UserPayload, @Param('uid') uid: string) {
+    return this.friendService.lookupByUid(uid, user.id);
+  }
+
   @Get('lookup/:friendCode')
   @SocialRateLimit('lookup')
   async lookupByFriendCode(@CurrentUser() user: UserPayload, @Param('friendCode') code: string) {

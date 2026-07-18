@@ -14,6 +14,7 @@ export class CommunityService {
         user: {
           select: {
             id: true,
+            uid: true,
             username: true,
             createdAt: true,
           },
@@ -27,6 +28,7 @@ export class CommunityService {
 
     return {
       id: profile.user.id,
+      uid: profile.user.uid,
       username: profile.user.username,
       displayName: profile.displayName,
       avatarUrl: profile.avatarUrl,
@@ -68,6 +70,7 @@ export class CommunityService {
         user: {
           select: {
             id: true,
+            uid: true,
             username: true,
             profile: {
               select: {
@@ -98,6 +101,7 @@ export class CommunityService {
         user: {
           select: {
             id: true,
+            uid: true,
             username: true,
             profile: {
               select: {

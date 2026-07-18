@@ -3,6 +3,7 @@ import {
   ConflictException,
   UnauthorizedException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -13,9 +14,13 @@ import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 
 const REFRESH_TOKEN_COST = 12;
+const UID_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const UID_LENGTH = 8;
 
 @Injectable()
 export class IdentityService {
+  private readonly logger = new Logger(IdentityService.name);
+
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
@@ -23,29 +28,39 @@ export class IdentityService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const existingUser = await this.prisma.user.findFirst({
-      where: { OR: [{ email: dto.email }, { username: dto.username }] },
-    });
-    if (existingUser) throw new ConflictException('Email or username already exists');
+    const normalizedEmail = this.normalizeEmail(dto.email);
+    const existingUser = await this.prisma.user.findUnique({ where: { normalizedEmail } });
+    if (existingUser) {
+      throw new ConflictException({ code: 'EMAIL_ALREADY_EXISTS', message: 'Email already exists' });
+    }
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    const user = await this.createUserWithUniqueFriendCode({
-      email: dto.email,
-      username: dto.username,
-      passwordHash,
-    });
+    let user;
+    try {
+      user = await this.createUserWithUniquePublicIdentity({
+        email: dto.email.trim(),
+        normalizedEmail,
+        username: dto.username.trim(),
+        passwordHash,
+      });
+    } catch (error) {
+      if (this.isUniqueConflict(error, 'normalizedEmail')) {
+        throw new ConflictException({ code: 'EMAIL_ALREADY_EXISTS', message: 'Email already exists' });
+      }
+      throw error;
+    }
 
     return { user, ...(await this.createSessionTokens(user.id, user.email, dto.deviceId)) };
   }
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    const user = await this.prisma.user.findUnique({ where: { normalizedEmail: this.normalizeEmail(dto.email) } });
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
     return {
-      user: { id: user.id, email: user.email, username: user.username, friendCode: user.friendCode },
+      user: { id: user.id, uid: user.uid, email: user.email, username: user.username, friendCode: user.friendCode },
       ...(await this.createSessionTokens(user.id, user.email, dto.deviceId)),
     };
   }
@@ -84,7 +99,7 @@ export class IdentityService {
   async getProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, username: true, friendCode: true, createdAt: true, profile: true },
+      select: { id: true, uid: true, email: true, username: true, friendCode: true, createdAt: true, profile: true },
     });
     if (!user) throw new UnauthorizedException('User not found');
     return user;
@@ -161,28 +176,63 @@ export class IdentityService {
     return randomBytes(4).toString('hex').toUpperCase();
   }
 
-  private async createUserWithUniqueFriendCode(input: { email: string; username: string; passwordHash: string }) {
+  private generateUid(): string {
+    const limit = Math.floor(256 / UID_ALPHABET.length) * UID_ALPHABET.length;
+    let value = '';
+    while (value.length < UID_LENGTH) {
+      for (const byte of randomBytes(UID_LENGTH)) {
+        if (byte >= limit) continue;
+        value += UID_ALPHABET[byte % UID_ALPHABET.length];
+        if (value.length === UID_LENGTH) break;
+      }
+    }
+    return `OC-${value}`;
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
+  private async createUserWithUniquePublicIdentity(input: {
+    email: string;
+    normalizedEmail: string;
+    username: string;
+    passwordHash: string;
+  }) {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
-        return await this.prisma.user.create({
+        const user = await this.prisma.user.create({
           data: {
             ...input,
+            uid: this.generateUid(),
             friendCode: this.generateFriendCode(),
             profile: { create: { displayName: input.username } },
           },
-          select: { id: true, email: true, username: true, friendCode: true, createdAt: true },
+          select: { id: true, uid: true, email: true, username: true, friendCode: true, createdAt: true },
         });
+        this.logger.log(JSON.stringify({ event: 'social-uid:generated', userId: user.id, uid: user.uid }));
+        return user;
       } catch (error) {
-        if (!this.isFriendCodeConflict(error) || attempt === 4) throw error;
+        const retryable = this.isUniqueConflict(error, 'uid') || this.isUniqueConflict(error, 'friendCode');
+        if (!retryable) throw error;
+        if (attempt === 4) {
+          throw new ConflictException({
+            code: 'SOCIAL_UID_GENERATION_FAILED',
+            message: 'Could not allocate a unique UID. Please try again.',
+          });
+        }
       }
     }
-    throw new ConflictException({ code: 'FRIEND_CODE_GENERATION_FAILED', message: 'Could not allocate a unique Friend Code. Please try again.' });
+    throw new ConflictException({
+      code: 'SOCIAL_UID_GENERATION_FAILED',
+      message: 'Could not allocate a unique UID. Please try again.',
+    });
   }
 
-  private isFriendCodeConflict(error: unknown): boolean {
+  private isUniqueConflict(error: unknown, field: 'uid' | 'friendCode' | 'normalizedEmail'): boolean {
     const prismaError = error as { code?: string; meta?: { target?: unknown } };
     const target = prismaError.meta?.target;
     return prismaError.code === 'P2002'
-      && (Array.isArray(target) ? target.includes('friendCode') : target === 'friendCode');
+      && (Array.isArray(target) ? target.includes(field) : target === field);
   }
 }

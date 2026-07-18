@@ -9,8 +9,10 @@ datasource db {
 
 model User {
   id            String    @id @default(uuid())
-  email         String    @unique
-  username      String    @unique
+  uid           String    @unique
+  email         String
+  normalizedEmail String  @unique
+  username      String
   passwordHash  String
   friendCode    String    @unique
   createdAt     DateTime  @default(now())
@@ -36,6 +38,8 @@ model User {
   visitInvitationsHosted VisitInvitation[] @relation("VisitInvitationHost")
   visitSessionsOwned VisitSession[] @relation("VisitSessionVisitorOwner")
   visitSessionsHosted VisitSession[] @relation("VisitSessionHost")
+
+  @@index([username])
 }
 
 model DeviceSession {

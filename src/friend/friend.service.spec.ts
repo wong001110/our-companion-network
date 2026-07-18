@@ -6,6 +6,30 @@ describe('FriendService S2 rules', () => {
 
   beforeEach(() => eventPublisher.publishToUser.mockReset());
 
+  it('looks up UID case-insensitively without exposing email', async () => {
+    const findUnique = jest.fn().mockResolvedValue({
+      id: 'user-b', uid: 'OC-7K4M92QX', username: 'Same Name', friendCode: 'ABCDEF12',
+    });
+    const service = new FriendService({ user: { findUnique } } as never, eventPublisher as never);
+    const result = await service.lookupByUid(' oc-7k4m92qx ');
+    expect(findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { uid: 'OC-7K4M92QX' } }));
+    expect(result).toEqual(expect.objectContaining({ uid: 'OC-7K4M92QX', username: 'Same Name' }));
+    expect(result).not.toHaveProperty('email');
+  });
+
+  it('returns the same privacy-safe not-found response for unknown and malformed UIDs', async () => {
+    const service = new FriendService(
+      { user: { findUnique: jest.fn().mockResolvedValue(null) } } as never,
+      eventPublisher as never,
+    );
+    await expect(service.lookupByUid('oc-xxxxxxxx')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'SOCIAL_UID_NOT_FOUND' }),
+    });
+    await expect(service.lookupByUid('bad')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'SOCIAL_UID_NOT_FOUND' }),
+    });
+  });
+
   it('rejects a request to oneself with the stable social code', async () => {
     const service = new FriendService({} as never, eventPublisher as never);
     await expect(service.sendFriendRequest('user-a', { receiverId: 'user-a' })).rejects.toMatchObject<Partial<ForbiddenException>>({});

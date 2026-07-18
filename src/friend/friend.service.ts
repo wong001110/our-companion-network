@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  Logger,
   Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -12,11 +13,34 @@ import { VisitService } from '../visit/visit.service';
 
 @Injectable()
 export class FriendService {
+  private readonly logger = new Logger(FriendService.name);
+
   constructor(
     private prisma: PrismaService,
     private readonly events: SocialEventPublisher,
     @Optional() private readonly visits?: VisitService,
   ) {}
+
+  async lookupByUid(uid: string, requesterId?: string) {
+    const normalizedUid = uid.trim().toUpperCase();
+    if (!/^OC-[A-Z0-9]{8}$/.test(normalizedUid)) {
+      throw new NotFoundException({ code: 'SOCIAL_UID_NOT_FOUND', message: 'UID was not found' });
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { uid: normalizedUid },
+      select: { id: true, uid: true, username: true, friendCode: true },
+    });
+    if (!user) {
+      throw new NotFoundException({ code: 'SOCIAL_UID_NOT_FOUND', message: 'UID was not found' });
+    }
+    this.logger.log(JSON.stringify({
+      event: 'social-uid:lookup',
+      requesterId: requesterId ?? null,
+      resolvedUserId: user.id,
+      uid: normalizedUid,
+    }));
+    return this.withRelationship(user, requesterId, 'SOCIAL_UID_NOT_FOUND');
+  }
 
   async lookupByFriendCode(code: string, requesterId?: string) {
     const normalizedCode = code.trim().toUpperCase();
@@ -27,6 +51,7 @@ export class FriendService {
       where: { friendCode: normalizedCode },
       select: {
         id: true,
+        uid: true,
         username: true,
         friendCode: true,
       },
@@ -35,6 +60,14 @@ export class FriendService {
     if (!user) {
       throw new NotFoundException({ code: 'INVALID_FRIEND_CODE', message: 'Friend code was not found' });
     }
+    return this.withRelationship(user, requesterId, 'INVALID_FRIEND_CODE');
+  }
+
+  private async withRelationship<T extends { id: string }>(
+    user: T,
+    requesterId: string | undefined,
+    notFoundCode: 'SOCIAL_UID_NOT_FOUND' | 'INVALID_FRIEND_CODE',
+  ) {
     if (!requesterId || requesterId === user.id) return { ...user, relationship: 'none' };
     const [friendship, outgoing, incoming, blocked] = await Promise.all([
       this.prisma.friendship.findUnique({ where: { userId_friendId: { userId: requesterId, friendId: user.id } } }),
@@ -42,7 +75,10 @@ export class FriendService {
       this.prisma.friendRequest.findUnique({ where: { senderId_receiverId: { senderId: user.id, receiverId: requesterId } } }),
       this.prisma.blockedUser.findFirst({ where: { OR: [{ blockerId: requesterId, blockedId: user.id }, { blockerId: user.id, blockedId: requesterId }] } }),
     ]);
-    if (blocked) throw new NotFoundException({ code: 'INVALID_FRIEND_CODE', message: 'Friend code was not found' });
+    if (blocked) throw new NotFoundException({
+      code: notFoundCode,
+      message: notFoundCode === 'SOCIAL_UID_NOT_FOUND' ? 'UID was not found' : 'Friend code was not found',
+    });
     const relationship = friendship ? 'friend' : outgoing?.status === 'pending' ? 'outgoing_request' : incoming?.status === 'pending' ? 'incoming_request' : 'none';
     return { ...user, relationship };
   }
@@ -99,10 +135,10 @@ export class FriendService {
       update: { status: 'pending', updatedAt: new Date() },
       include: {
         sender: {
-          select: { id: true, username: true },
+          select: { id: true, uid: true, username: true },
         },
         receiver: {
-          select: { id: true, username: true },
+          select: { id: true, uid: true, username: true },
         },
       },
     });
@@ -118,8 +154,7 @@ export class FriendService {
         status: 'pending',
       },
       include: {
-        sender: { select: { id: true, username: true, friendCode: true },
-        },
+        sender: { select: { id: true, uid: true, username: true, friendCode: true } },
       },
       orderBy: { updatedAt: 'desc' },
     });
@@ -130,7 +165,7 @@ export class FriendService {
   async getOutgoingRequests(userId: string) {
     return this.prisma.friendRequest.findMany({
       where: { senderId: userId, status: 'pending' },
-      include: { receiver: { select: { id: true, username: true, friendCode: true } } },
+      include: { receiver: { select: { id: true, uid: true, username: true, friendCode: true } } },
       orderBy: { updatedAt: 'desc' },
     });
   }
@@ -229,6 +264,7 @@ export class FriendService {
         friend: {
           select: {
             id: true,
+            uid: true,
             username: true,
             friendCode: true,
             activeNetworkCompanion: {
@@ -253,6 +289,7 @@ export class FriendService {
       const companion = friend.activeNetworkCompanion;
       return {
         id: friend.id,
+        uid: friend.uid,
         username: friend.username,
         friendCode: friend.friendCode,
         profile: friend.profile,
@@ -375,9 +412,9 @@ export class FriendService {
   async getBlockedUsers(userId: string) {
     const records = await this.prisma.blockedUser.findMany({
       where: { blockerId: userId },
-      include: { blocked: { select: { id: true, username: true } } },
+      include: { blocked: { select: { id: true, uid: true, username: true } } },
       orderBy: { createdAt: 'desc' },
     });
-    return records.map((record) => ({ userId: record.blocked.id, username: record.blocked.username, blockedAt: record.createdAt }));
+    return records.map((record) => ({ userId: record.blocked.id, uid: record.blocked.uid, username: record.blocked.username, blockedAt: record.createdAt }));
   }
 }
