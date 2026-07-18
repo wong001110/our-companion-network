@@ -11,6 +11,7 @@ const INVITATION_TERMINAL = ['accepted', 'declined', 'cancelled', 'expired'];
 const SESSION_LIVE = ['preparing', 'ready', 'active', 'ending'];
 const SESSION_HEARTBEAT = ['preparing', 'ready', 'active'];
 const SESSION_TERMINAL = ['ended', 'cancelled', 'failed'];
+const MAX_CONCURRENT_HOST_VISITORS = 2;
 const INVITATION_SELECT = { id: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, companionName: true, companionDescription: true, companionTags: true, status: true, expiresAt: true, respondedAt: true, cancelledAt: true, createdAt: true, updatedAt: true } as const;
 const SESSION_SELECT = { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, state: true, visitorOwnerReadyAt: true, hostReadyAt: true, readyAt: true, startedAt: true, endedAt: true, endReason: true, failureCode: true, createdAt: true, updatedAt: true } as const;
 
@@ -41,7 +42,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     const invitation = await this.prisma.$transaction(async tx => {
       await this.lockParticipants(tx, visitorOwnerUserId, hostUserId);
       await this.assertEligible(tx, visitorOwnerUserId, hostUserId);
-      await this.assertNoLiveSession(tx, visitorOwnerUserId, hostUserId);
+      await this.assertVisitorOwnerAvailable(tx, visitorOwnerUserId);
       const snapshot = await this.loadCurrentSnapshotInTransaction(tx, visitorOwnerUserId);
       if (!snapshot) this.notAvailable();
       if (!supportsVisualVisit(snapshot.pack.manifest)) this.visualAssetsUnavailable();
@@ -70,7 +71,8 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       }
       await this.lockParticipants(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
       await this.assertEligible(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
-      await this.assertNoLiveSession(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
+      await this.assertVisitorOwnerAvailable(tx, invitation.visitorOwnerUserId);
+      await this.assertHostCapacity(tx, invitation.hostUserId);
       await this.lockCompanion(tx, invitation.networkCompanionId);
       const companion = await tx.networkCompanion.findUnique({ where: { id: invitation.networkCompanionId }, select: { id: true, published: true, visibility: true } });
       if (!companion || !companion.published || companion.visibility !== 'friends_only' || !invitation.assetPackRefId) this.notAvailable();
@@ -297,9 +299,28 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     if (!forward || !reverse || blocked) this.notAvailable();
   }
 
-  private async assertNoLiveSession(tx: any, first: string, second: string) {
-    const session = await tx.visitSession.findFirst({ where: { state: { in: SESSION_LIVE }, OR: [{ visitorOwnerUserId: { in: [first, second] } }, { hostUserId: { in: [first, second] } }] }, select: { id: true, visitorOwnerUserId: true, hostUserId: true } });
-    if (session) throw new ConflictException({ code: 'VISIT_SESSION_ALREADY_ACTIVE', message: 'A participant already has an active Visit session' });
+  private async assertVisitorOwnerAvailable(tx: any, visitorOwnerUserId: string) {
+    const session = await tx.visitSession.findFirst({
+      where: { state: { in: SESSION_LIVE }, OR: [{ visitorOwnerUserId }, { hostUserId: visitorOwnerUserId }] },
+      select: { id: true, visitorOwnerUserId: true, hostUserId: true },
+    });
+    if (!session) return;
+    const code = session.hostUserId === visitorOwnerUserId ? 'VISIT_HOST_HAS_ACTIVE_GUESTS' : 'VISIT_SESSION_ALREADY_ACTIVE';
+    throw new ConflictException({ code, message: 'A participant already has an active Visit session' });
+  }
+
+  /** lockParticipants() serializes all acceptance attempts for a given host. */
+  private async assertHostCapacity(tx: any, hostUserId: string) {
+    const [outgoing, occupied] = await Promise.all([
+      tx.visitSession.findFirst({ where: { visitorOwnerUserId: hostUserId, state: { in: SESSION_LIVE } }, select: { id: true } }),
+      tx.visitSession.count({ where: { hostUserId, state: { in: SESSION_LIVE } } }),
+    ]);
+    if (outgoing) {
+      throw new ConflictException({ code: 'VISIT_HOST_COMPANION_AWAY', message: 'The host Companion is away visiting' });
+    }
+    if (occupied >= MAX_CONCURRENT_HOST_VISITORS) {
+      throw new ConflictException({ code: 'VISIT_HOST_CAPACITY_REACHED', message: 'The host has reached the maximum number of Visitors' });
+    }
   }
 
   private async lockParticipants(tx: Prisma.TransactionClient, first: string, second: string) { await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" IN (${first}, ${second}) ORDER BY "id" FOR UPDATE`; }

@@ -23,7 +23,7 @@ describeIntegration('S4 Visit participant concurrency', () => {
     await admin.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
     await admin.$executeRawUnsafe(`CREATE TABLE "${schema}"."User" ("id" TEXT PRIMARY KEY)`);
     await admin.$executeRawUnsafe(`CREATE TABLE "${schema}"."VisitSession" ("id" TEXT PRIMARY KEY, "visitorOwnerUserId" TEXT NOT NULL, "hostUserId" TEXT NOT NULL, "state" TEXT NOT NULL)`);
-    await admin.$executeRawUnsafe(`INSERT INTO "${schema}"."User" ("id") VALUES ('A'), ('B'), ('C')`);
+    await admin.$executeRawUnsafe(`INSERT INTO "${schema}"."User" ("id") VALUES ('A'), ('B'), ('C'), ('D')`);
     first = new PrismaClient({ datasources: { db: { url: schemaUrl(schema) } } });
     second = new PrismaClient({ datasources: { db: { url: schemaUrl(schema) } } });
   });
@@ -38,24 +38,32 @@ describeIntegration('S4 Visit participant concurrency', () => {
     return client.$transaction(async tx => {
       // This is the same deterministic participant-row lock used by VisitService.
       await tx.$executeRawUnsafe(`SELECT "id" FROM "User" WHERE "id" IN ('${owner}', '${host}') ORDER BY "id" FOR UPDATE`);
-      const existing = await tx.$queryRawUnsafe<Array<{ id: string }>>(`SELECT "id" FROM "VisitSession" WHERE "state" IN ('preparing', 'ready', 'active', 'ending') AND ("visitorOwnerUserId" IN ('${owner}', '${host}') OR "hostUserId" IN ('${owner}', '${host}')) LIMIT 1`);
-      if (existing.length) return false;
+      const ownerSession = await tx.$queryRawUnsafe<Array<{ id: string }>>(`SELECT "id" FROM "VisitSession" WHERE "state" IN ('preparing', 'ready', 'active', 'ending') AND ("visitorOwnerUserId" = '${owner}' OR "hostUserId" = '${owner}') LIMIT 1`);
+      const hostOutgoing = await tx.$queryRawUnsafe<Array<{ id: string }>>(`SELECT "id" FROM "VisitSession" WHERE "state" IN ('preparing', 'ready', 'active', 'ending') AND "visitorOwnerUserId" = '${host}' LIMIT 1`);
+      const hostSessions = await tx.$queryRawUnsafe<Array<{ id: string }>>(`SELECT "id" FROM "VisitSession" WHERE "state" IN ('preparing', 'ready', 'active', 'ending') AND "hostUserId" = '${host}' LIMIT 2`);
+      if (ownerSession.length || hostOutgoing.length || hostSessions.length >= 2) return false;
       await tx.$executeRawUnsafe(`INSERT INTO "VisitSession" ("id", "visitorOwnerUserId", "hostUserId", "state") VALUES ('${id}', '${owner}', '${host}', 'preparing')`);
       return true;
     });
   }
 
-  it.each([
-    ['A-to-B and C-to-B', 'A', 'B', 'C', 'B'],
-    ['A-to-B and B-to-C', 'A', 'B', 'B', 'C'],
-  ])('%s creates exactly one live session for the overlapping participant', async (_name, ownerA, hostA, ownerB, hostB) => {
-    const [firstAccepted, secondAccepted] = await Promise.all([
-      accept(first, `session-${randomUUID()}`, ownerA, hostA),
-      accept(second, `session-${randomUUID()}`, ownerB, hostB),
+  it('admits exactly two concurrent Visitor owners for one host and rejects the third', async () => {
+    const accepted = await Promise.all([
+      accept(first, `session-${randomUUID()}`, 'A', 'B'),
+      accept(second, `session-${randomUUID()}`, 'C', 'B'),
+      accept(second, `session-${randomUUID()}`, 'D', 'B'),
     ]);
-    expect(Number(firstAccepted) + Number(secondAccepted)).toBe(1);
+    expect(accepted.filter(Boolean)).toHaveLength(2);
     const sessions = await admin.$queryRawUnsafe<Array<{ count: bigint }>>(`SELECT count(*)::bigint AS "count" FROM "${schema}"."VisitSession" WHERE "state" IN ('preparing', 'ready', 'active', 'ending')`);
-    expect(sessions[0].count).toBe(BigInt(1));
+    expect(sessions[0].count).toBe(BigInt(2));
     await admin.$executeRawUnsafe(`TRUNCATE TABLE "${schema}"."VisitSession"`);
+  });
+
+  it('rejects an outgoing Visit from a user who is already hosting', async () => {
+    const accepted = await Promise.all([
+      accept(first, `session-${randomUUID()}`, 'A', 'B'),
+      accept(second, `session-${randomUUID()}`, 'B', 'C'),
+    ]);
+    expect(accepted.filter(Boolean)).toHaveLength(1);
   });
 });

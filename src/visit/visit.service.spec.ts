@@ -68,13 +68,35 @@ describe('VisitService S4 lifecycle and privacy', () => {
   it('rechecks Visual Visit compatibility when the host accepts an invitation', async () => {
     const tx = {
       $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
-      visitSession: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      visitSession: { findFirst: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(0), create: jest.fn() },
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, published: true, visibility: 'friends_only' }) },
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest('Walk_Right') }) },
     };
     const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
     await expect(instance.acceptInvitation(host, invitationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'VISIT_VISUAL_ASSETS_UNAVAILABLE' }) });
+    expect(tx.visitInvitation.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a third occupied host slot before accepting the invitation', async () => {
+    const tx = {
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      visitSession: { findFirst: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(2), create: jest.fn() },
+      visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
+    };
+    const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
+    await expect(instance.acceptInvitation(host, invitationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'VISIT_HOST_CAPACITY_REACHED' }) });
+    expect(tx.visitInvitation.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects an incoming acceptance while the host is away as a Visitor owner', async () => {
+    const tx = {
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      visitSession: { findFirst: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'host-outgoing' }), count: jest.fn().mockResolvedValue(0), create: jest.fn() },
+      visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
+    };
+    const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
+    await expect(instance.acceptInvitation(host, invitationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'VISIT_HOST_COMPANION_AWAY' }) });
     expect(tx.visitInvitation.update).not.toHaveBeenCalled();
   });
 
