@@ -7,6 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  USER
+  SUPERADMIN
+}
+
+enum UserAccountStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 model User {
   id            String    @id @default(uuid())
   uid           String    @unique
@@ -15,6 +25,9 @@ model User {
   username      String
   passwordHash  String
   friendCode    String    @unique
+  role          UserRole  @default(USER)
+  accountStatus UserAccountStatus @default(ACTIVE)
+  suspendedAt   DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -40,6 +53,8 @@ model User {
   visitSessionsHosted VisitSession[] @relation("VisitSessionHost")
 
   @@index([username])
+  @@index([role])
+  @@index([accountStatus])
 }
 
 model DeviceSession {
@@ -48,6 +63,7 @@ model DeviceSession {
   deviceId                String
   refreshTokenHash        String
   previousRefreshTokenHash String?
+  csrfTokenHash           String?
   createdAt               DateTime  @default(now())
   lastUsedAt              DateTime  @updatedAt
   expiresAt               DateTime
@@ -271,4 +287,20 @@ model VisitSession {
   @@index([hostUserId, state])
   @@index([assetPackRefId, state])
   @@index([updatedAt, state])
+}
+
+model AdminAuditLog {
+  id            String   @id @default(uuid())
+  adminUserId   String
+  action        String
+  targetType    String
+  targetId      String?
+  reason        String?
+  metadata      Json?
+  ipAddressHash String?
+  createdAt     DateTime @default(now())
+
+  @@index([adminUserId, createdAt])
+  @@index([targetType, targetId])
+  @@index([createdAt, id])
 }

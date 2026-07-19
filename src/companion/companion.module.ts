@@ -5,5 +5,5 @@ import { AssetPackController, CompanionController, FriendCompanionController } f
 import { CommonModule } from '../common/common.module';
 import { VisitModule } from '../visit/visit.module';
 
-@Module({ imports: [CommonModule, VisitModule], controllers: [CompanionController, AssetPackController, FriendCompanionController], providers: [CompanionService, CompanionCleanupService] })
+@Module({ imports: [CommonModule, VisitModule], controllers: [CompanionController, AssetPackController, FriendCompanionController], providers: [CompanionService, CompanionCleanupService], exports: [CompanionService] })
 export class CompanionModule {}

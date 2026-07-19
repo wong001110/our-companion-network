@@ -58,6 +58,12 @@ export class IdentityService {
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid credentials');
     }
+    if (user.accountStatus !== 'ACTIVE') {
+      throw new ForbiddenException({
+        code: 'ACCOUNT_SUSPENDED',
+        message: 'This account is suspended',
+      });
+    }
 
     return {
       user: { id: user.id, uid: user.uid, email: user.email, username: user.username, friendCode: user.friendCode },
@@ -73,12 +79,16 @@ export class IdentityService {
     const reused = await this.findMatchingSession(sessions, refreshToken, 'previousRefreshTokenHash');
     if (reused) {
       await this.prisma.deviceSession.update({
-        where: { id: reused.id }, data: { revokedAt: new Date() },
+        where: { id: reused.id },
+        data: { revokedAt: new Date(), csrfTokenHash: null },
       });
       throw new UnauthorizedException('Invalid refresh token');
     }
     const activeSession = await this.findMatchingSession(sessions, refreshToken, 'refreshTokenHash');
-    if (!activeSession || activeSession.revokedAt || activeSession.expiresAt <= new Date()) {
+    if (!activeSession
+      || activeSession.revokedAt
+      || activeSession.expiresAt <= new Date()
+      || activeSession.user.accountStatus !== 'ACTIVE') {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
@@ -91,7 +101,7 @@ export class IdentityService {
     }
     await this.prisma.deviceSession.updateMany({
       where: { userId, deviceId, revokedAt: null },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: new Date(), csrfTokenHash: null },
     });
     return { message: 'Logged out successfully' };
   }
@@ -114,6 +124,7 @@ export class IdentityService {
       update: {
         refreshTokenHash,
         previousRefreshTokenHash: null,
+        csrfTokenHash: null,
         expiresAt: tokens.refreshExpiresAt,
         revokedAt: null,
       },

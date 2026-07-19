@@ -5,6 +5,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -127,6 +128,35 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     this.requireAvailable();
     try { await this.client!.send(new PutObjectCommand({ Bucket: this.bucket!, Key: objectKey, Body: body, ContentType: 'application/json' })); }
     catch (error) { this.markUnavailable(); throw error; }
+  }
+
+  async listObjectKeys(prefix: string, maxKeys = 1_000): Promise<string[]> {
+    this.requireAvailable();
+    const boundedMax = Math.max(1, Math.min(10_000, Math.floor(maxKeys)));
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+    try {
+      do {
+        const remaining = boundedMax - keys.length;
+        const result = await this.client!.send(new ListObjectsV2Command({
+          Bucket: this.bucket!,
+          Prefix: prefix,
+          MaxKeys: Math.min(1_000, remaining),
+          ContinuationToken: continuationToken,
+        }));
+        for (const item of result.Contents ?? []) {
+          if (item.Key) keys.push(item.Key);
+          if (keys.length >= boundedMax) break;
+        }
+        continuationToken = keys.length < boundedMax && result.IsTruncated
+          ? result.NextContinuationToken
+          : undefined;
+      } while (continuationToken);
+      return keys;
+    } catch (error) {
+      this.markUnavailable();
+      throw error;
+    }
   }
 
   async deleteObjects(objectKeys: string[]): Promise<void> {

@@ -40,9 +40,16 @@ export class SocketAuthService {
         if (!payload.sub || payload.deviceId !== deviceId) return next(new Error('AUTHENTICATION_FAILED'));
         const session = await this.prisma.deviceSession.findUnique({
           where: { userId_deviceId: { userId: payload.sub, deviceId } },
-          select: { revokedAt: true, expiresAt: true },
+          select: {
+            revokedAt: true,
+            expiresAt: true,
+            user: { select: { accountStatus: true } },
+          },
         });
-        if (!session || session.revokedAt || session.expiresAt <= new Date()) return next(new Error('AUTHENTICATION_FAILED'));
+        if (!session
+          || session.revokedAt
+          || session.expiresAt <= new Date()
+          || session.user.accountStatus !== 'ACTIVE') return next(new Error('AUTHENTICATION_FAILED'));
 
         client.data.userId = payload.sub;
         client.data.deviceId = deviceId;

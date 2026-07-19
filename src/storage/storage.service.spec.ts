@@ -25,4 +25,26 @@ describe('StorageService configuration', () => {
     await expect(service.deleteObjects(['opaque-key'])).rejects.toThrow('ASSET_STORAGE_DELETE_INCOMPLETE');
     expect(service.capability.uploadsEnabled).toBe(false);
   });
+
+  it('lists a bounded object prefix across continuation pages', async () => {
+    const service = new StorageService(config() as never);
+    (service as any)._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: true, downloadsEnabled: true };
+    const send = jest.fn()
+      .mockResolvedValueOnce({
+        Contents: [{ Key: 'prefix/a' }, { Key: 'prefix/b' }],
+        IsTruncated: true,
+        NextContinuationToken: 'next-page',
+      })
+      .mockResolvedValueOnce({
+        Contents: [{ Key: 'prefix/c' }],
+        IsTruncated: false,
+      });
+    (service as any).client = { send };
+    await expect(service.listObjectKeys('prefix/', 3)).resolves.toEqual([
+      'prefix/a',
+      'prefix/b',
+      'prefix/c',
+    ]);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
 });

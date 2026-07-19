@@ -96,6 +96,15 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     return (this.userSockets.get(userId)?.size ?? 0) > 0;
   }
 
+  getOperationalSnapshot() {
+    return {
+      status: this.server ? 'ok' : 'unavailable',
+      connectionCount: [...this.userSockets.values()]
+        .reduce((total, sockets) => total + sockets.size, 0),
+      connectedUsers: this.userSockets.size,
+    };
+  }
+
   @SubscribeMessage('presence.activity')
   async handleActivity(@ConnectedSocket() client: Socket): Promise<void> {
     const userId = client.data.userId as string | undefined;

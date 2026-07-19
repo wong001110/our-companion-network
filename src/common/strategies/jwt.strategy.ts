@@ -3,6 +3,8 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { Request } from 'express';
+import { BROWSER_COOKIE_NAMES } from '../browser-security.service';
 
 export interface JwtPayload {
   sub: string;
@@ -17,7 +19,24 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private prisma: PrismaService,
   ) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        (request: Request) => {
+          const cookie = request?.headers?.cookie;
+          if (!cookie) return null;
+          for (const part of cookie.split(';')) {
+            const [name, ...value] = part.trim().split('=');
+            if (name === BROWSER_COOKIE_NAMES.access) {
+              try {
+                return decodeURIComponent(value.join('='));
+              } catch {
+                return null;
+              }
+            }
+          }
+          return null;
+        },
+      ]),
       ignoreExpiration: false,
       secretOrKey: configService.get<string>('JWT_SECRET'),
     });
@@ -32,13 +51,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!session || session.revokedAt || session.expiresAt <= new Date()) throw new UnauthorizedException();
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, email: true, username: true },
+      select: { id: true, email: true, username: true, accountStatus: true },
     });
 
-    if (!user) {
+    if (!user || user.accountStatus !== 'ACTIVE') {
       throw new UnauthorizedException();
     }
 
-    return { ...user, deviceId: payload.deviceId };
+    const { accountStatus: _accountStatus, ...safeUser } = user;
+    return { ...safeUser, deviceId: payload.deviceId };
   }
 }

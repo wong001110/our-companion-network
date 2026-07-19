@@ -59,6 +59,25 @@ The server will be running at `http://localhost:3001`.
 | POST | /api/auth/logout | Logout |
 | GET | /api/auth/me | Get current user |
 
+Browser Portal authentication uses the same account and `DeviceSession` identity
+through `/api/portal/auth/login`, `/refresh`, `/logout`, and `/session`. Tokens
+are returned only as Secure, HttpOnly, SameSite cookies. Browser mutations must
+send the non-HttpOnly `oc_csrf` cookie value in `X-CSRF-Token`, and their exact
+`Origin` must appear in `PORTAL_ORIGINS`. Desktop bearer-token behavior is
+unchanged.
+
+### Portal and Caretaker APIs
+
+Owner-scoped Portal routes are under `/api/portal` and include summary, profile,
+Companions and Pack history, publication, friends, requests, blocks, Visits,
+devices, revocation, and password changes. Their list responses use bounded
+stable pagination.
+
+Caretaker routes are under `/api/admin`. They re-check the current database role
+on every request and expose bounded account, Companion, Asset Pack, invitation,
+session, overview, health, audit, and storage-cleanup views. State-changing
+routes require a reason and write the append-only audit log.
+
 ### Friends
 
 | Method | Endpoint | Description |
@@ -143,6 +162,35 @@ src/
 
 ## Development
 
+### Network Portal
+
+The user Portal and SUPERADMIN Caretaker Desk live in `portal/` and talk only
+to the NestJS `/api/portal/*` and `/api/admin/*` session APIs.
+
+For local browser authentication, copy `.env.example` to `.env`. The example
+allows the Vite origin at `http://localhost:4173` and intentionally sets
+`PORTAL_COOKIE_SECURE=false` because local development uses HTTP. Production
+must use HTTPS, list the deployed Portal origin in `PORTAL_ORIGINS`, and set
+`PORTAL_COOKIE_SECURE=true`.
+
+Run the API and Portal in separate terminals:
+
+```bash
+npm run start:dev
+npm run portal:dev
+```
+
+Portal verification:
+
+```bash
+npm run portal:typecheck
+npm run portal:lint
+npm run portal:test
+npm run portal:build
+npm run portal:test:e2e
+npm run portal:qa
+```
+
 ### Run Tests
 
 ```bash
@@ -155,6 +203,28 @@ npm run test:e2e
 ```bash
 npx prisma generate
 ```
+
+### Manage Superadmins
+
+Role changes are available only through the local CLI. The command displays the
+resolved account and requires its exact UID plus an audit reason.
+
+```bash
+npm run admin:promote -- --uid OC-ABCDEFGH --confirm OC-ABCDEFGH --reason "Initial caretaker setup"
+npm run admin:demote -- --uid OC-ABCDEFGH --confirm OC-ABCDEFGH --reason "Caretaker rotation"
+```
+
+When a current Superadmin is acting, add `--actor-uid OC-ADMINUID`. Production
+also requires both of these action-specific confirmations:
+
+```bash
+--environment production
+--confirm-production PRODUCTION-PROMOTE-OC-ABCDEFGH
+```
+
+Use `PRODUCTION-DEMOTE-<UID>` for demotion. The CLI serializes role changes,
+refuses to demote the last Superadmin, and writes each change to the append-only
+admin audit log.
 
 ### Open Prisma Studio
 

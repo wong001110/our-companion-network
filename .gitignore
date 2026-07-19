@@ -1,6 +1,10 @@
 # compiled output
 /dist
 /node_modules
+/portal/dist
+/portal/node_modules
+/portal/playwright-report
+/portal/test-results
 
 # Logs
 logs

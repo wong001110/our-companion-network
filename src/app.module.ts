@@ -16,6 +16,9 @@ import { MetaModule } from './meta/meta.module';
 import { StorageModule } from './storage/storage.module';
 import { CompanionModule } from './companion/companion.module';
 import { SmokeModule } from './smoke/smoke.module';
+import { AdminModule } from './admin/admin.module';
+import { BrowserCsrfGuard } from './common/guards/browser-csrf.guard';
+import { PortalModule } from './portal/portal.module';
 
 @Module({
   imports: [
@@ -32,11 +35,17 @@ import { SmokeModule } from './smoke/smoke.module';
     CommunityModule,
     CompanionModule,
     SmokeModule,
+    AdminModule,
+    PortalModule,
   ],
   providers: [
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: BrowserCsrfGuard,
     },
     {
       provide: APP_INTERCEPTOR,

@@ -9,6 +9,10 @@ import { SocialEventPublisher } from './social-event-publisher.service';
 import { SocialRateLimitGuard } from './guards/social-rate-limit.guard';
 import { VisitConfigService } from './visit-config.service';
 import { StorageModule } from '../storage/storage.module';
+import { BrowserSecurityService } from './browser-security.service';
+import { BrowserOriginGuard } from './guards/browser-origin.guard';
+import { BrowserCsrfGuard } from './guards/browser-csrf.guard';
+import { PortalRateLimitGuard } from './guards/portal-rate-limit.guard';
 
 @Module({
   imports: [
@@ -25,7 +29,7 @@ import { StorageModule } from '../storage/storage.module';
     PassportModule,
     StorageModule,
   ],
-  providers: [JwtStrategy, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard, VisitConfigService],
-  exports: [JwtModule, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard, VisitConfigService],
+  providers: [JwtStrategy, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard, VisitConfigService, BrowserSecurityService, BrowserOriginGuard, BrowserCsrfGuard, PortalRateLimitGuard],
+  exports: [JwtModule, SocketAuthService, ProtocolConfigService, SocialEventPublisher, SocialRateLimitGuard, VisitConfigService, BrowserSecurityService, BrowserOriginGuard, BrowserCsrfGuard, PortalRateLimitGuard],
 })
 export class CommonModule {}

@@ -37,7 +37,7 @@ describe('IdentityService logout', () => {
     await expect(service.refreshToken('consumed-refresh-token', 'device-a')).rejects.toBeInstanceOf(UnauthorizedException);
     expect(update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'session-1' },
-      data: { revokedAt: expect.any(Date) },
+      data: expect.objectContaining({ revokedAt: expect.any(Date) }),
     }));
   });
 
@@ -90,6 +90,7 @@ describe('IdentityService logout', () => {
     const passwordHash = await bcrypt.hash('password123', 4);
     const findUnique = jest.fn().mockResolvedValue({
       id: 'user-1', uid: 'OC-ABCDEFGH', email: 'ann@example.com', username: 'Ann', friendCode: 'ABCDEF12', passwordHash,
+      accountStatus: 'ACTIVE',
     });
     const login = new IdentityService(
       { user: { findUnique }, deviceSession: { upsert: jest.fn() } } as never,
@@ -109,5 +110,27 @@ describe('IdentityService logout', () => {
     for (const uid of generated) {
       expect(uid).toMatch(/^OC-[A-HJ-KM-NP-Z2-9]{8}$/);
     }
+  });
+
+  it('rejects a suspended account even with the correct password', async () => {
+    const passwordHash = await bcrypt.hash('password123', 4);
+    const service = new IdentityService(
+      {
+        user: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'user-1',
+            passwordHash,
+            accountStatus: 'SUSPENDED',
+          }),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+    );
+    await expect(service.login({
+      email: 'user@example.test',
+      password: 'password123',
+      deviceId: 'device-1',
+    })).rejects.toMatchObject({ response: { code: 'ACCOUNT_SUSPENDED' } });
   });
 });

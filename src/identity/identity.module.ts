@@ -23,6 +23,6 @@ import { AuthRateLimitGuard } from '../common/guards/auth-rate-limit.guard';
   ],
   controllers: [IdentityController],
   providers: [IdentityService, JwtStrategy, AuthRateLimitGuard],
-  exports: [IdentityService],
+  exports: [IdentityService, AuthRateLimitGuard],
 })
 export class IdentityModule {}
