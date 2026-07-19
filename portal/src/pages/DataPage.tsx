@@ -61,14 +61,14 @@ export function DataPage() {
   async function downloadExport() {
     setNotice('');
     try {
-      const data = await api<Record<string, unknown>>('/api/portal/data-export');
-      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      // Refresh an expired browser session with the normal API flow before
+      // handing the streamed attachment to the browser's download manager.
+      await api('/api/portal/summary');
       const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `our-companion-network-export-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.href = '/api/portal/data-export';
+      anchor.download = '';
       anchor.click();
-      URL.revokeObjectURL(url);
-      setNotice('Your private Network export was downloaded.');
+      setNotice('Your private Network export download has started.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'The export could not be prepared.');
     }

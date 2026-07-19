@@ -21,6 +21,7 @@ interface Companion {
   publicTags: string[];
   visibility: string;
   published: boolean;
+  isActive: boolean;
   activeAssetPackId: string | null;
   publishedAt: string | null;
   createdAt: string;
@@ -50,12 +51,14 @@ interface AssetPack {
 export function CompanionPage() {
   const [page, setPage] = useState(1);
   const [packPage, setPackPage] = useState(1);
+  const [selectedCompanionId, setSelectedCompanionId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const companions = useQuery({
     queryKey: ['companions', page],
     queryFn: () => api<PageEnvelope<Companion>>(`/api/portal/companions?page=${page}&limit=12`),
   });
-  const companion = companions.data?.items[0];
+  const companionRows = companions.data?.items ?? [];
+  const companion = chooseCompanionPassport(companionRows, selectedCompanionId);
   const packs = useQuery({
     queryKey: ['asset-packs', companion?.id, packPage],
     queryFn: () => api<PageEnvelope<AssetPack>>(
@@ -87,6 +90,39 @@ export function CompanionPage() {
       )}
       {companion && (
         <>
+          {companionRows.length > 1 && (
+            <>
+              <div className="section-title">
+                <div>
+                  <p className="eyebrow">Passport shelf</p>
+                  <h2>Choose a Companion</h2>
+                </div>
+                <Cat aria-hidden="true" />
+              </div>
+              <div className="tab-list" role="tablist" aria-label="Companion passports">
+                {companionRows.map((item) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={item.id === companion.id}
+                    key={item.id}
+                    onClick={() => {
+                      setSelectedCompanionId(item.id);
+                      setPackPage(1);
+                    }}
+                  >
+                    <Cat aria-hidden="true" />
+                    {item.name}
+                    {item.isActive
+                      ? ' · Active passport'
+                      : item.published
+                        ? ' · Published'
+                        : ' · Private'}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <PaperCard className="companion-passport">
             <div className="passport-photo">
               <Cat aria-hidden="true" />
@@ -95,11 +131,13 @@ export function CompanionPage() {
             <div className="passport-details">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">Companion passport</p>
+                  <p className="eyebrow">{companion.isActive ? 'Active Network passport' : 'Companion passport'}</p>
                   <h2>{companion.name}</h2>
                 </div>
-                <Stamp tone={companion.published ? 'good' : 'neutral'}>
-                  {companion.published ? 'Published' : 'Private'}
+                <Stamp tone={companion.isActive ? 'purple' : companion.published ? 'good' : 'neutral'}>
+                  {companion.isActive
+                    ? companion.published ? 'Active · Published' : 'Active · Private'
+                    : companion.published ? 'Published' : 'Private'}
                 </Stamp>
               </div>
               <p>{companion.publicDescription || 'No public description has been added yet.'}</p>
@@ -161,10 +199,27 @@ export function CompanionPage() {
           </div>
           {packs.data && <Pagination {...packs.data.pagination} onPage={setPackPage} />}
           {companions.data && companions.data.pagination.totalPages > 1 && (
-            <Pagination {...companions.data.pagination} onPage={setPage} />
+            <Pagination
+              {...companions.data.pagination}
+              onPage={(nextPage) => {
+                setPage(nextPage);
+                setSelectedCompanionId(null);
+                setPackPage(1);
+              }}
+            />
           )}
         </>
       )}
     </>
   );
+}
+
+export function chooseCompanionPassport(
+  companions: Companion[],
+  selectedCompanionId: string | null,
+): Companion | undefined {
+  return companions.find((companion) => companion.id === selectedCompanionId)
+    ?? companions.find((companion) => companion.isActive)
+    ?? companions.find((companion) => companion.published)
+    ?? companions[0];
 }

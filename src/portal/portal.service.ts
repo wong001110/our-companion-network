@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
+import { Readable } from 'node:stream';
 import { PrismaService } from '../prisma/prisma.service';
 import { CompanionService } from '../companion/companion.service';
 import { UpdateProfileDto } from '../community/dto/update-profile.dto';
@@ -155,11 +156,16 @@ export class PortalService {
               failureCode: true,
             },
           },
+          activeForUser: { select: { id: true } },
         },
       }),
       this.prisma.networkCompanion.count({ where }),
     ]);
-    return pageEnvelope(items.map(normalizeBigInts), total, page);
+    return pageEnvelope(items.map(({ activeForUser, ...companion }) =>
+      normalizeBigInts({
+        ...companion,
+        isActive: Boolean(activeForUser),
+      })), total, page);
   }
 
   async getCompanion(userId: string, companionId: string) {
@@ -176,10 +182,12 @@ export class PortalService {
         publishedAt: true,
         createdAt: true,
         updatedAt: true,
+        activeForUser: { select: { id: true } },
       },
     });
     if (!companion) throw new NotFoundException('Companion not found');
-    return companion;
+    const { activeForUser, ...profile } = companion;
+    return { ...profile, isActive: Boolean(activeForUser) };
   }
 
   async listAssetPacks(
@@ -246,12 +254,12 @@ export class PortalService {
     const where: Prisma.FriendshipWhereInput = {
       userId,
       ...dateWhere(query),
-      ...((query.status || query.search) ? {
-        friend: {
-          ...(query.status && query.status !== 'published'
-            ? { presence: { status: query.status } }
-            : {}),
-          ...(query.status === 'published' ? {
+      friend: {
+        accountStatus: 'ACTIVE',
+        ...(query.status && query.status !== 'published'
+          ? { presence: { status: query.status } }
+          : {}),
+        ...(query.status === 'published' ? {
           activeNetworkCompanion: {
             is: {
               published: true,
@@ -259,14 +267,13 @@ export class PortalService {
               activeAssetPackId: { not: null },
             },
           },
-          } : {}),
-          ...(query.search ? { OR: [
-            { uid: { contains: query.search, mode: 'insensitive' as const } },
-            { username: { contains: query.search, mode: 'insensitive' as const } },
-            { profile: { displayName: { contains: query.search, mode: 'insensitive' as const } } },
-          ] } : {}),
-        },
-      } : {}),
+        } : {}),
+        ...(query.search ? { OR: [
+          { uid: { contains: query.search, mode: 'insensitive' as const } },
+          { username: { contains: query.search, mode: 'insensitive' as const } },
+          { profile: { displayName: { contains: query.search, mode: 'insensitive' as const } } },
+        ] } : {}),
+      },
     };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.friendship.findMany({
@@ -321,6 +328,18 @@ export class PortalService {
       ...(incoming ? { receiverId: userId } : { senderId: userId }),
       ...(query.status ? { status: query.status } : {}),
       ...dateWhere(query),
+      [incoming ? 'sender' : 'receiver']: {
+        accountStatus: 'ACTIVE',
+        deletionRequestedAt: null,
+        ...(query.search ? {
+          OR: [
+            { id: { contains: query.search.trim(), mode: 'insensitive' } },
+            { uid: { contains: query.search.trim(), mode: 'insensitive' } },
+            { username: { contains: query.search.trim(), mode: 'insensitive' } },
+            { profile: { displayName: { contains: query.search.trim(), mode: 'insensitive' } } },
+          ],
+        } : {}),
+      },
     };
     const relation = {
       select: {
@@ -568,196 +587,166 @@ export class PortalService {
   }
 
   async dataExport(userId: string) {
-    const exportLimit = 10_000;
-    const [
-      account,
-      friends,
-      friendRequests,
-      blockedUsers,
-      companions,
-      visitInvitations,
-      visitSessions,
-      notifications,
-      sharedDiscoveries,
-      deviceSessions,
-    ] = await this.prisma.$transaction([
-      this.prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          uid: true,
-          email: true,
-          username: true,
-          friendCode: true,
-          role: true,
-          accountStatus: true,
-          createdAt: true,
-          updatedAt: true,
-          profile: true,
-          presence: true,
-        },
-      }),
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: EXPORT_ACCOUNT_SELECT,
+    });
+    if (!account) throw new UnauthorizedException();
+    return Readable.from(this.generateDataExport(userId, account), {
+      objectMode: false,
+      highWaterMark: 16 * 1024,
+    });
+  }
+
+  private async *generateDataExport(
+    userId: string,
+    account: Record<string, unknown>,
+  ): AsyncGenerator<string> {
+    yield `{"schemaVersion":2,"generatedAt":${safeExportJson(new Date())}`;
+    yield `,"account":${safeExportJson(account)}`;
+    yield ',"friends":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.friendship.findMany({
         where: { userId },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
-        select: {
-          id: true,
-          createdAt: true,
-          friend: {
-            select: {
-              id: true,
-              uid: true,
-              username: true,
-              friendCode: true,
-            },
-          },
-        },
-      }),
+        ...exportCursorPage(cursor),
+        select: EXPORT_FRIENDSHIP_SELECT,
+      }));
+    yield ',"friendRequests":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.friendRequest.findMany({
         where: { OR: [{ senderId: userId }, { receiverId: userId }] },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
-        select: {
-          id: true,
-          senderId: true,
-          receiverId: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
+        ...exportCursorPage(cursor),
+        select: EXPORT_FRIEND_REQUEST_SELECT,
+      }));
+    yield ',"blockedUsers":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.blockedUser.findMany({
         where: { blockerId: userId },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
-        select: {
-          id: true,
-          blockedId: true,
-          createdAt: true,
-        },
-      }),
-      this.prisma.networkCompanion.findMany({
-        where: { ownerUserId: userId },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
-        select: {
-          id: true,
-          name: true,
-          publicDescription: true,
-          publicTags: true,
-          visibility: true,
-          published: true,
-          activeAssetPackId: true,
-          createdAt: true,
-          updatedAt: true,
-          publishedAt: true,
-          assetPacks: {
-            take: exportLimit,
-            orderBy: stableOrderBy('createdAt'),
-            select: {
-              id: true,
-              manifestHash: true,
-              schemaVersion: true,
-              manifest: true,
-              status: true,
-              totalFiles: true,
-              totalBytes: true,
-              failureCode: true,
-              createdAt: true,
-              updatedAt: true,
-              completedAt: true,
-              activatedAt: true,
-              supersededAt: true,
-              files: {
-                take: exportLimit,
-                orderBy: stableOrderBy('relativePath'),
-                select: {
-                  id: true,
-                  relativePath: true,
-                  mimeType: true,
-                  sizeBytes: true,
-                  sha256: true,
-                  category: true,
-                  uploaded: true,
-                  verifiedAt: true,
-                },
-              },
-            },
-          },
-        },
-      }),
+        ...exportCursorPage(cursor),
+        select: EXPORT_BLOCKED_USER_SELECT,
+      }));
+    yield ',"companions":';
+    yield* this.streamExportCompanions(userId);
+    yield ',"visitInvitations":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.visitInvitation.findMany({
         where: {
           OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
         },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
+        ...exportCursorPage(cursor),
         select: PORTAL_INVITATION_SELECT,
-      }),
-      this.prisma.visitSession.findMany({
+      }));
+    yield ',"visitSessions":';
+    yield* this.streamExportArray(
+      (cursor) => this.prisma.visitSession.findMany({
         where: {
           OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
         },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
+        ...exportCursorPage(cursor),
         select: PORTAL_SESSION_SELECT,
       }),
+      withDuration,
+    );
+    yield ',"notifications":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.notification.findMany({
         where: { userId },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
-        select: {
-          id: true,
-          type: true,
-          title: true,
-          message: true,
-          data: true,
-          read: true,
-          createdAt: true,
-        },
-      }),
+        ...exportCursorPage(cursor),
+        select: EXPORT_NOTIFICATION_SELECT,
+      }));
+    yield ',"sharedDiscoveries":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.discovery.findMany({
         where: { userId },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          metadata: true,
-          createdAt: true,
-        },
-      }),
+        ...exportCursorPage(cursor),
+        select: EXPORT_DISCOVERY_SELECT,
+      }));
+    yield ',"deviceSessions":';
+    yield* this.streamExportArray((cursor) =>
       this.prisma.deviceSession.findMany({
         where: { userId },
-        take: exportLimit,
-        orderBy: stableOrderBy('createdAt'),
+        ...exportCursorPage(cursor),
         select: SAFE_DEVICE_SELECT,
-      }),
+      }));
+    yield ',"neverStored":';
+    yield safeExportJson([
+      'Local Chat',
+      'Local Memory',
+      'Local API Keys',
+      'Local private Discovery',
+      'Desktop activity history',
     ]);
-    if (!account) throw new UnauthorizedException();
-    return normalizeBigInts({
-      generatedAt: new Date(),
-      exportLimitPerCategory: exportLimit,
-      account,
-      friends,
-      friendRequests,
-      blockedUsers,
-      companions,
-      visitInvitations,
-      visitSessions: visitSessions.map(withDuration),
-      notifications,
-      sharedDiscoveries,
-      deviceSessions,
-      neverStored: [
-        'Local Chat',
-        'Local Memory',
-        'Local API Keys',
-        'Local private Discovery',
-        'Desktop activity history',
-      ],
-    });
+    yield ',"complete":true}';
+  }
+
+  private async *streamExportCompanions(userId: string): AsyncGenerator<string> {
+    let first = true;
+    yield '[';
+    for await (const companion of this.exportRows((cursor) =>
+      this.prisma.networkCompanion.findMany({
+        where: { ownerUserId: userId },
+        ...exportCursorPage(cursor),
+        select: EXPORT_COMPANION_SELECT,
+      }))) {
+      if (!first) yield ',';
+      first = false;
+      yield `${safeExportJson(companion).slice(0, -1)},"assetPacks":`;
+      yield* this.streamExportAssetPacks(companion.id);
+      yield '}';
+    }
+    yield ']';
+  }
+
+  private async *streamExportAssetPacks(
+    companionId: string,
+  ): AsyncGenerator<string> {
+    let first = true;
+    yield '[';
+    for await (const pack of this.exportRows((cursor) =>
+      this.prisma.companionAssetPack.findMany({
+        where: { companionId },
+        ...exportCursorPage(cursor),
+        select: EXPORT_ASSET_PACK_SELECT,
+      }))) {
+      if (!first) yield ',';
+      first = false;
+      yield `${safeExportJson(pack).slice(0, -1)},"files":`;
+      yield* this.streamExportArray((cursor) =>
+        this.prisma.companionAssetFile.findMany({
+          where: { assetPackId: pack.id },
+          ...exportCursorPage(cursor),
+          select: EXPORT_ASSET_FILE_SELECT,
+        }));
+      yield '}';
+    }
+    yield ']';
+  }
+
+  private async *streamExportArray<T extends { id: string }>(
+    fetchBatch: (cursor?: string) => Promise<T[]>,
+    map: (item: T) => unknown = (item) => item,
+  ): AsyncGenerator<string> {
+    let first = true;
+    yield '[';
+    for await (const item of this.exportRows(fetchBatch)) {
+      if (!first) yield ',';
+      first = false;
+      yield safeExportJson(map(item));
+    }
+    yield ']';
+  }
+
+  private async *exportRows<T extends { id: string }>(
+    fetchBatch: (cursor?: string) => Promise<T[]>,
+  ): AsyncGenerator<T> {
+    let cursor: string | undefined;
+    do {
+      const batch = await fetchBatch(cursor);
+      for (const item of batch) yield item;
+      if (batch.length < EXPORT_BATCH_SIZE) return;
+      cursor = batch[batch.length - 1]?.id;
+      if (!cursor) return;
+    } while (cursor);
   }
 
   async deleteNotifications(userId: string) {
@@ -816,14 +805,23 @@ export class PortalService {
             supersededAt: { lt: before },
             ...noLiveVisit,
           },
-          data: { status: 'deleting' },
+          data: { status: 'deleting', failureCode: null },
         });
         if (claim.count !== 1) continue;
       }
-      await this.storage.deleteObjects([
-        ...pack.files.map((file) => file.objectKey),
-        `${pack.objectPrefix}/manifest.json`,
-      ]);
+      try {
+        await this.storage.deleteObjects([
+          ...pack.files.map((file) => file.objectKey),
+          `${pack.objectPrefix}/manifest.json`,
+        ]);
+        await this.storage.assertObjectPrefixDeleted(pack.objectPrefix);
+      } catch (error) {
+        await this.prisma.companionAssetPack.updateMany({
+          where: { id: pack.id, status: 'deleting', companion: { ownerUserId: userId } },
+          data: { failureCode: 'ASSET_CLEANUP_FAILED' },
+        }).catch(() => undefined);
+        throw error;
+      }
       await this.prisma.companionAssetPack.deleteMany({
         where: {
           id: pack.id,
@@ -837,27 +835,36 @@ export class PortalService {
   }
 
   async deleteAccount(userId: string) {
-    const account = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, role: true },
-    });
-    if (!account) throw new UnauthorizedException();
-    if (account.role === 'SUPERADMIN') {
-      throw new ForbiddenException({
-        code: 'SUPERADMIN_SELF_DELETE_FORBIDDEN',
-        message: 'Superadmin accounts must be demoted through the controlled CLI before deletion',
-      });
-    }
-
-    const packs = await this.prisma.companionAssetPack.findMany({
-      where: { companion: { ownerUserId: userId } },
-      include: { files: { select: { objectKey: true } } },
-    });
-    await this.prisma.$transaction(async (tx) => {
+    const requestedAt = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
+      const account = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          role: true,
+          deletionRequestedAt: true,
+          suspendedAt: true,
+        },
+      });
+      if (!account) throw new UnauthorizedException();
+      if (account.role === 'SUPERADMIN') {
+        throw new ForbiddenException({
+          code: 'SUPERADMIN_SELF_DELETE_FORBIDDEN',
+          message: 'Superadmin accounts must be demoted through the controlled CLI before deletion',
+        });
+      }
+
+      const deletionRequestedAt = account.deletionRequestedAt ?? new Date();
       await tx.user.update({
         where: { id: userId },
-        data: { activeNetworkCompanionId: null },
+        data: {
+          activeNetworkCompanionId: null,
+          accountStatus: 'SUSPENDED',
+          suspendedAt: account.suspendedAt ?? deletionRequestedAt,
+          deletionRequestedAt,
+          deletionNextAttemptAt: deletionRequestedAt,
+          deletionAttemptCount: 0,
+        },
       });
       await tx.networkCompanion.updateMany({
         where: { ownerUserId: userId },
@@ -869,22 +876,183 @@ export class PortalService {
       });
       await tx.companionAssetPack.updateMany({
         where: { companion: { ownerUserId: userId } },
-        data: { status: 'deleting' },
+        data: { status: 'deleting', failureCode: null },
+      });
+      await tx.friendRequest.updateMany({
+        where: {
+          status: 'pending',
+          OR: [{ senderId: userId }, { receiverId: userId }],
+        },
+        data: { status: 'cancelled' },
       });
       await tx.deviceSession.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date(), csrfTokenHash: null },
       });
+      return deletionRequestedAt;
     });
 
-    for (const pack of packs) {
-      await this.storage.deleteObjects([
-        ...pack.files.map((file) => file.objectKey),
-        `${pack.objectPrefix}/manifest.json`,
-      ]);
+    try {
+      const result = await this.finalizePendingAccountDeletion(
+        userId,
+        requestedAt,
+      );
+      if (!result.deleted) {
+        await this.deferAccountDeletion(
+          userId,
+          new Date(result.deleteAfter),
+          false,
+        );
+      }
+      return result;
+    } catch {
+      const deleteAfter = await this.deferAccountDeletion(
+        userId,
+        new Date(),
+        true,
+      );
+      return {
+        deleted: false,
+        pending: true,
+        deleteAfter: deleteAfter.toISOString(),
+      };
+    }
+  }
+
+  async finalizePendingAccountDeletions(limit = 100) {
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const now = new Date();
+    const accounts = await this.prisma.user.findMany({
+      where: {
+        deletionRequestedAt: { not: null },
+        OR: [
+          { deletionNextAttemptAt: null },
+          { deletionNextAttemptAt: { lte: now } },
+        ],
+      },
+      take: boundedLimit,
+      orderBy: [
+        { deletionRequestedAt: 'asc' },
+        { id: 'asc' },
+      ],
+      select: { id: true, deletionRequestedAt: true },
+    });
+    let deleted = 0;
+    let pending = 0;
+    let failed = 0;
+    for (const account of accounts) {
+      try {
+        const result = await this.finalizePendingAccountDeletion(
+          account.id,
+          account.deletionRequestedAt!,
+        );
+        if (result.deleted) {
+          deleted += 1;
+        } else {
+          pending += 1;
+          await this.deferAccountDeletion(
+            account.id,
+            new Date(result.deleteAfter),
+            false,
+          );
+        }
+      } catch {
+        failed += 1;
+        await this.deferAccountDeletion(account.id, new Date(), true)
+          .catch(() => undefined);
+      }
+    }
+    return {
+      processed: accounts.length,
+      deleted,
+      pending,
+      failed,
+    };
+  }
+
+  private async finalizePendingAccountDeletion(
+    userId: string,
+    requestedAt: Date,
+  ): Promise<
+    | { deleted: true; pending: false }
+    | { deleted: false; pending: true; deleteAfter: string }
+  > {
+    const packSummary = await this.prisma.companionAssetPack.aggregate({
+      where: { companion: { ownerUserId: userId } },
+      _count: { id: true },
+      _max: { lastUploadUrlIssuedAt: true },
+    });
+    const deleteAfter = accountDeletionNotBefore(
+      requestedAt,
+      packSummary._max.lastUploadUrlIssuedAt,
+      this.storage.limits.uploadUrlTtlSeconds,
+    );
+    if (deleteAfter > new Date()) {
+      return {
+        deleted: false,
+        pending: true,
+        deleteAfter: deleteAfter.toISOString(),
+      };
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    let cursor: string | undefined;
+    let processedPacks = 0;
+    do {
+      const packs = await this.prisma.companionAssetPack.findMany({
+        where: { companion: { ownerUserId: userId } },
+        take: ACCOUNT_DELETION_PACK_BATCH_SIZE,
+        orderBy: { id: 'asc' },
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        select: { id: true, objectPrefix: true },
+      });
+      for (const pack of packs) {
+        try {
+          await this.storage.deleteObjectPrefix(pack.objectPrefix);
+        } catch (error) {
+          await this.prisma.companionAssetPack.updateMany({
+            where: {
+              id: pack.id,
+              status: 'deleting',
+              companion: { ownerUserId: userId },
+            },
+            data: { failureCode: 'ASSET_CLEANUP_FAILED' },
+          }).catch(() => undefined);
+          throw error;
+        }
+      }
+      processedPacks += packs.length;
+      if (packs.length < ACCOUNT_DELETION_PACK_BATCH_SIZE) break;
+      cursor = packs[packs.length - 1]?.id;
+    } while (cursor);
+
+    const finalized = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
+      const account = await tx.user.findUnique({
+        where: { id: userId },
+        select: { deletionRequestedAt: true },
+      });
+      if (!account?.deletionRequestedAt) return { deleted: true } as const;
+      const latestPackSummary = await tx.companionAssetPack.aggregate({
+        where: { companion: { ownerUserId: userId } },
+        _count: { id: true },
+        _max: { lastUploadUrlIssuedAt: true },
+      });
+      const latestDeleteAfter = accountDeletionNotBefore(
+        account.deletionRequestedAt,
+        latestPackSummary._max.lastUploadUrlIssuedAt,
+        this.storage.limits.uploadUrlTtlSeconds,
+      );
+      if (
+        latestDeleteAfter > new Date()
+        || latestPackSummary._count.id !== processedPacks
+        || packSummary._count.id !== processedPacks
+      ) {
+        return {
+          deleted: false,
+          deleteAfter: latestDeleteAfter,
+        } as const;
+      }
+
       await tx.visitSession.deleteMany({
         where: {
           OR: [
@@ -904,8 +1072,50 @@ export class PortalService {
         },
       });
       await tx.user.delete({ where: { id: userId } });
+      return { deleted: true } as const;
     });
-    return { deleted: true };
+    if (!finalized.deleted) {
+      return {
+        deleted: false,
+        pending: true,
+        deleteAfter: finalized.deleteAfter.toISOString(),
+      };
+    }
+    return { deleted: true, pending: false };
+  }
+
+  private async deferAccountDeletion(
+    userId: string,
+    requestedNextAttempt: Date,
+    failed: boolean,
+  ): Promise<Date> {
+    let nextAttemptAt = requestedNextAttempt;
+    if (failed) {
+      const account = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { deletionAttemptCount: true },
+      });
+      const attempt = Math.min(
+        (account?.deletionAttemptCount ?? 0) + 1,
+        ACCOUNT_DELETION_MAX_BACKOFF_EXPONENT,
+      );
+      nextAttemptAt = new Date(
+        Date.now() + Math.min(
+          ACCOUNT_DELETION_MAX_BACKOFF_MS,
+          ACCOUNT_DELETION_RETRY_BASE_MS * 2 ** (attempt - 1),
+        ),
+      );
+    }
+    await this.prisma.user.updateMany({
+      where: { id: userId, deletionRequestedAt: { not: null } },
+      data: {
+        deletionNextAttemptAt: nextAttemptAt,
+        ...(failed
+          ? { deletionAttemptCount: { increment: 1 } }
+          : { deletionAttemptCount: 0 }),
+      },
+    });
+    return nextAttemptAt;
   }
 
   private async requireOwnedCompanion(userId: string, companionId: string) {
@@ -916,6 +1126,131 @@ export class PortalService {
     if (!companion) throw new NotFoundException('Companion not found');
   }
 }
+
+const ACCOUNT_DELETION_EXPIRY_SAFETY_MS = 5_000;
+const ACCOUNT_DELETION_PACK_BATCH_SIZE = 100;
+const ACCOUNT_DELETION_RETRY_BASE_MS = 60_000;
+const ACCOUNT_DELETION_MAX_BACKOFF_MS = 60 * 60_000;
+const ACCOUNT_DELETION_MAX_BACKOFF_EXPONENT = 10;
+
+function accountDeletionNotBefore(
+  requestedAt: Date,
+  lastUploadUrlIssuedAt: Date | null,
+  uploadUrlTtlSeconds: number,
+): Date {
+  let notBefore = requestedAt.getTime();
+  if (lastUploadUrlIssuedAt) {
+    notBefore = Math.max(
+      notBefore,
+      lastUploadUrlIssuedAt.getTime()
+        + uploadUrlTtlSeconds * 1_000
+        + ACCOUNT_DELETION_EXPIRY_SAFETY_MS,
+    );
+  }
+  return new Date(notBefore);
+}
+
+const EXPORT_BATCH_SIZE = 100;
+
+const EXPORT_ACCOUNT_SELECT = {
+  id: true,
+  uid: true,
+  email: true,
+  username: true,
+  friendCode: true,
+  role: true,
+  accountStatus: true,
+  createdAt: true,
+  updatedAt: true,
+  profile: true,
+  presence: true,
+} as const;
+
+const EXPORT_FRIENDSHIP_SELECT = {
+  id: true,
+  createdAt: true,
+  friend: {
+    select: {
+      id: true,
+      uid: true,
+      username: true,
+      friendCode: true,
+    },
+  },
+} as const;
+
+const EXPORT_FRIEND_REQUEST_SELECT = {
+  id: true,
+  senderId: true,
+  receiverId: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+const EXPORT_BLOCKED_USER_SELECT = {
+  id: true,
+  blockedId: true,
+  createdAt: true,
+} as const;
+
+const EXPORT_COMPANION_SELECT = {
+  id: true,
+  name: true,
+  publicDescription: true,
+  publicTags: true,
+  visibility: true,
+  published: true,
+  activeAssetPackId: true,
+  createdAt: true,
+  updatedAt: true,
+  publishedAt: true,
+} as const;
+
+const EXPORT_ASSET_PACK_SELECT = {
+  id: true,
+  manifestHash: true,
+  schemaVersion: true,
+  manifest: true,
+  status: true,
+  totalFiles: true,
+  totalBytes: true,
+  failureCode: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
+  activatedAt: true,
+  supersededAt: true,
+} as const;
+
+const EXPORT_ASSET_FILE_SELECT = {
+  id: true,
+  relativePath: true,
+  mimeType: true,
+  sizeBytes: true,
+  sha256: true,
+  category: true,
+  uploaded: true,
+  verifiedAt: true,
+} as const;
+
+const EXPORT_NOTIFICATION_SELECT = {
+  id: true,
+  type: true,
+  title: true,
+  message: true,
+  data: true,
+  read: true,
+  createdAt: true,
+} as const;
+
+const EXPORT_DISCOVERY_SELECT = {
+  id: true,
+  title: true,
+  description: true,
+  metadata: true,
+  createdAt: true,
+} as const;
 
 const SAFE_DEVICE_SELECT = {
   id: true,
@@ -960,6 +1295,57 @@ const PORTAL_SESSION_SELECT = {
   updatedAt: true,
   networkCompanion: { select: { name: true } },
 } as const;
+
+function exportCursorPage(cursor?: string) {
+  return {
+    take: EXPORT_BATCH_SIZE,
+    orderBy: { id: 'asc' as const },
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+  };
+}
+
+function safeExportJson(value: unknown): string {
+  return JSON.stringify(sanitizeExportValue(value), (_key, item) =>
+    typeof item === 'bigint' ? item.toString() : item);
+}
+
+function sanitizeExportValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeExportValue);
+  if (!value || typeof value !== 'object' || value instanceof Date) return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) =>
+    isSecretExportKey(key)
+      ? []
+      : [[key, sanitizeExportValue(item)]]));
+}
+
+function isSecretExportKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return SECRET_EXPORT_KEYS.has(normalized);
+}
+
+const SECRET_EXPORT_KEYS = new Set([
+  'password',
+  'passwordhash',
+  'token',
+  'tokenhash',
+  'refreshtoken',
+  'refreshtokenhash',
+  'previousrefreshtoken',
+  'previousrefreshtokenhash',
+  'csrftoken',
+  'csrftokenhash',
+  'accesstoken',
+  'apikey',
+  'credential',
+  'credentials',
+  'clientsecret',
+  'privatekey',
+  'signingkey',
+  'secret',
+  'secrets',
+  'objectkey',
+  'objectprefix',
+]);
 
 function normalizeBigInts<T extends Record<string, any>>(value: T): T {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [

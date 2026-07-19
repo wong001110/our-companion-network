@@ -8,6 +8,7 @@ import { PortalController } from './portal.controller';
 import { PortalService } from './portal.service';
 import { AdminModule } from '../admin/admin.module';
 import { StorageModule } from '../storage/storage.module';
+import { AccountDeletionCleanupService } from './account-deletion-cleanup.service';
 
 @Module({
   imports: [
@@ -18,7 +19,11 @@ import { StorageModule } from '../storage/storage.module';
     StorageModule,
   ],
   controllers: [BrowserAuthController, PortalController],
-  providers: [BrowserAuthService, PortalService],
+  providers: [
+    BrowserAuthService,
+    PortalService,
+    AccountDeletionCleanupService,
+  ],
   exports: [BrowserAuthService, PortalService],
 })
 export class PortalModule {}

@@ -116,36 +116,107 @@ export class AdminApiService {
   }
 
   async getUser(adminUserId: string, userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        ...ADMIN_USER_SUMMARY,
-        profile: true,
-        presence: true,
-        deviceSessions: {
-          orderBy: stableOrderBy('lastUsedAt'),
-          take: 100,
-          select: SAFE_DEVICE_SELECT,
-        },
-        networkCompanions: {
-          orderBy: stableOrderBy('updatedAt'),
-          take: 100,
-          select: ADMIN_COMPANION_SUMMARY,
-        },
-        _count: {
-          select: {
-            friendships: true,
-            blockedUsers: true,
-            blockedBy: true,
-            notifications: true,
-            visitInvitationsOwned: true,
-            visitInvitationsHosted: true,
-            visitSessionsOwned: true,
-            visitSessionsHosted: true,
+    const [
+      user,
+      unreadNotifications,
+      accountAssetPacks,
+      accountAssetPackTotal,
+    ] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          ...ADMIN_USER_SUMMARY,
+          profile: true,
+          presence: true,
+          deviceSessions: {
+            orderBy: stableOrderBy('lastUsedAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: SAFE_DEVICE_SELECT,
+          },
+          networkCompanions: {
+            orderBy: stableOrderBy('updatedAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: ADMIN_COMPANION_SUMMARY,
+          },
+          friendships: {
+            orderBy: stableOrderBy('createdAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: {
+              id: true,
+              createdAt: true,
+              friend: { select: ADMIN_RELATED_USER_SELECT },
+            },
+          },
+          blockedUsers: {
+            orderBy: stableOrderBy('createdAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: {
+              id: true,
+              createdAt: true,
+              blocked: { select: ADMIN_RELATED_USER_SELECT },
+            },
+          },
+          blockedBy: {
+            orderBy: stableOrderBy('createdAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: {
+              id: true,
+              createdAt: true,
+              blocker: { select: ADMIN_RELATED_USER_SELECT },
+            },
+          },
+          visitInvitationsOwned: {
+            orderBy: stableOrderBy('updatedAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: ADMIN_INVITATION_SELECT,
+          },
+          visitInvitationsHosted: {
+            orderBy: stableOrderBy('updatedAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: ADMIN_INVITATION_SELECT,
+          },
+          visitSessionsOwned: {
+            orderBy: stableOrderBy('updatedAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: ADMIN_SESSION_SELECT,
+          },
+          visitSessionsHosted: {
+            orderBy: stableOrderBy('updatedAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: ADMIN_SESSION_SELECT,
+          },
+          notifications: {
+            orderBy: stableOrderBy('createdAt'),
+            take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+            select: ADMIN_NOTIFICATION_SELECT,
+          },
+          _count: {
+            select: {
+              friendships: true,
+              blockedUsers: true,
+              blockedBy: true,
+              notifications: true,
+              visitInvitationsOwned: true,
+              visitInvitationsHosted: true,
+              visitSessionsOwned: true,
+              visitSessionsHosted: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.notification.count({
+        where: { userId, read: false },
+      }),
+      this.prisma.companionAssetPack.findMany({
+        where: { companion: { ownerUserId: userId } },
+        orderBy: stableOrderBy('updatedAt'),
+        take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+        select: ADMIN_ACCOUNT_ASSET_PACK_SELECT,
+      }),
+      this.prisma.companionAssetPack.count({
+        where: { companion: { ownerUserId: userId } },
+      }),
+    ]);
     if (!user) throw new NotFoundException('User not found');
     await this.audit.record({
       adminUserId,
@@ -153,7 +224,67 @@ export class AdminApiService {
       targetType: 'User',
       targetId: user.id,
     });
-    return user;
+    const auditRelatedEvents = await this.prisma.adminAuditLog.findMany({
+      where: {
+        OR: [
+          { targetId: userId },
+          { adminUserId: userId },
+        ],
+      },
+      orderBy: stableOrderBy('createdAt'),
+      take: ADMIN_ACCOUNT_DETAIL_LIMIT,
+      select: ADMIN_ACCOUNT_AUDIT_SELECT,
+    });
+    const {
+      friendships,
+      blockedUsers,
+      blockedBy,
+      visitInvitationsOwned,
+      visitInvitationsHosted,
+      visitSessionsOwned,
+      visitSessionsHosted,
+      notifications,
+      ...account
+    } = user;
+    return {
+      ...account,
+      friends: friendships.map(({ friend, ...relationship }) => ({
+        ...relationship,
+        user: friend,
+      })),
+      blockedRelationships: {
+        outgoing: blockedUsers.map(({ blocked, ...relationship }) => ({
+          ...relationship,
+          user: blocked,
+        })),
+        incoming: blockedBy.map(({ blocker, ...relationship }) => ({
+          ...relationship,
+          user: blocker,
+        })),
+      },
+      visitInvitations: {
+        asVisitorOwner: visitInvitationsOwned,
+        asHost: visitInvitationsHosted,
+      },
+      visitSessions: {
+        asVisitorOwner: visitSessionsOwned,
+        asHost: visitSessionsHosted,
+      },
+      notifications: {
+        summary: {
+          total: user._count.notifications,
+          unread: unreadNotifications,
+        },
+        recent: notifications,
+      },
+      assetPacks: {
+        total: accountAssetPackTotal,
+        truncated: accountAssetPackTotal > accountAssetPacks.length,
+        items: accountAssetPacks.map((pack) => normalizeBigInts(pack)),
+      },
+      auditRelatedEvents,
+      detailLimit: ADMIN_ACCOUNT_DETAIL_LIMIT,
+    };
   }
 
   async setAccountStatus(
@@ -173,9 +304,23 @@ export class AdminApiService {
       await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
       const current = await tx.user.findUnique({
         where: { id: userId },
-        select: { id: true, uid: true, accountStatus: true },
+        select: {
+          id: true,
+          uid: true,
+          accountStatus: true,
+          deletionRequestedAt: true,
+        },
       });
       if (!current) throw new NotFoundException('User not found');
+      if (
+        status === UserAccountStatus.ACTIVE
+        && current.deletionRequestedAt
+      ) {
+        throw new ConflictException({
+          code: 'ACCOUNT_DELETION_PENDING',
+          message: 'An account pending deletion cannot be restored',
+        });
+      }
       const updated = await tx.user.update({
         where: { id: userId },
         data: {
@@ -400,7 +545,10 @@ export class AdminApiService {
         supersededAt: true,
         files: {
           orderBy: stableOrderBy('relativePath', undefined),
-          take: 100,
+          // Asset Packs are contractually capped at 1,000 files. Inspect the
+          // complete valid pack so later files are not misreported as R2
+          // orphans and receive the same HEAD/SHA/MIME verification.
+          take: 1_000,
           select: {
             id: true,
             relativePath: true,
@@ -414,7 +562,11 @@ export class AdminApiService {
           },
         },
         _count: {
-          select: { visitInvitationRefs: true, visitSessionRefs: true },
+          select: {
+            files: true,
+            visitInvitationRefs: true,
+            visitSessionRefs: true,
+          },
         },
       },
     });
@@ -458,12 +610,12 @@ export class AdminApiService {
       const metadata = fileMetadata[index];
       const relativePath = String(file.relativePath);
       if (!metadata) missingObjects.push(relativePath);
-      if (metadata?.sha256 && metadata.sha256 !== file.sha256) {
+      if (metadata && metadata.sha256 !== file.sha256) {
         shaMismatches.push(relativePath);
       }
       if (metadata && (
         metadata.sizeBytes !== Number(file.sizeBytes)
-        || (metadata.mimeType && metadata.mimeType !== file.mimeType)
+        || metadata.mimeType !== file.mimeType
       )) {
         metadataMismatches.push(relativePath);
       }
@@ -479,7 +631,10 @@ export class AdminApiService {
       };
     });
     if (!manifestMetadata) missingObjects.push('manifest.json');
-    const orphanObjects = actualKeys.filter((key) => !expectedKeys.has(key));
+    const fileInspectionTruncated = pack._count.files > pack.files.length;
+    const orphanObjects = fileInspectionTruncated
+      ? null
+      : actualKeys.filter((key) => !expectedKeys.has(key));
     return {
       ...normalized,
       files: inspectedFiles,
@@ -491,6 +646,7 @@ export class AdminApiService {
         orphanObjects,
         shaMismatches,
         metadataMismatches,
+        fileInspectionTruncated,
       },
     };
   }
@@ -506,10 +662,45 @@ export class AdminApiService {
   async getVisitSession(id: string) {
     const session = await this.prisma.visitSession.findUnique({
       where: { id },
-      select: ADMIN_SESSION_SELECT,
+      select: {
+        ...ADMIN_SESSION_SELECT,
+        invitation: {
+          select: {
+            status: true,
+            respondedAt: true,
+          },
+        },
+      },
     });
     if (!session) throw new NotFoundException('Visit Session not found');
-    return session;
+    const [snapshotPack, hostAwaySession] = await Promise.all([
+      this.prisma.companionAssetPack.findUnique({
+        where: { id: session.assetPackSnapshotId },
+        select: { id: true, companionId: true, status: true },
+      }),
+      this.prisma.visitSession.findFirst({
+        where: {
+          id: { not: session.id },
+          visitorOwnerUserId: session.hostUserId,
+          state: { in: VISIT_LIVE_STATES },
+        },
+        select: { id: true },
+      }),
+    ]);
+    const { invitation, ...record } = session;
+    const diagnostics = this.visitSessionDiagnostics(
+      record,
+      snapshotPack,
+      Boolean(hostAwaySession),
+    );
+    return {
+      ...record,
+      invitationAcceptedAt: invitation.status === 'accepted'
+        ? invitation.respondedAt
+        : null,
+      diagnostics,
+      reconciliation: this.visitReconciliationStatus(record),
+    };
   }
 
   async endVisitSession(
@@ -556,6 +747,76 @@ export class AdminApiService {
       sessionId: session.id,
       state: session.state,
     });
+    return session;
+  }
+
+  async reconcileVisitSession(
+    adminUserId: string,
+    id: string,
+    reason: string,
+  ) {
+    this.requireReason(reason);
+    const session = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "VisitSession" WHERE "id" = ${id} FOR UPDATE`;
+      const current = await tx.visitSession.findUnique({
+        where: { id },
+        select: ADMIN_SESSION_SELECT,
+      });
+      if (!current) throw new NotFoundException('Visit Session not found');
+      if (VISIT_TERMINAL_STATES.includes(current.state)) {
+        throw new ConflictException({
+          code: 'VISIT_RECONCILIATION_TERMINAL',
+          message: 'Terminal Visit Sessions cannot be reconciled',
+        });
+      }
+      const reconciliation = this.visitReconciliationStatus(current);
+      if (!reconciliation.eligible) {
+        throw new ConflictException({
+          code: 'VISIT_RECONCILIATION_NOT_STALE',
+          message: 'Only a conservatively stale live Visit Session can be reconciled',
+        });
+      }
+      const now = new Date();
+      const nextState = ['active', 'ending'].includes(current.state)
+        ? 'ended'
+        : 'cancelled';
+      const updated = await tx.visitSession.update({
+        where: { id },
+        data: {
+          state: nextState,
+          endingAt: ['active', 'ending'].includes(current.state)
+            ? current.endingAt ?? now
+            : null,
+          endedAt: now,
+          endReason: `admin_safe_reconciliation:${reason}`,
+          assetPackRefId: null,
+        },
+        select: ADMIN_SESSION_SELECT,
+      });
+      await this.audit.record({
+        adminUserId,
+        action: ADMIN_AUDIT_ACTIONS.RECONCILE_VISIT_SESSION,
+        targetType: 'VisitSession',
+        targetId: id,
+        reason,
+        metadata: {
+          previousState: current.state,
+          nextState,
+          hadAssetPackRef: Boolean(current.assetPackRefId),
+          staleAfterMinutes: VISIT_RECONCILIATION_STALE_MINUTES,
+        },
+      }, tx);
+      return updated;
+    });
+    for (const userId of [
+      session.visitorOwnerUserId,
+      session.hostUserId,
+    ]) {
+      this.events.publishToUser(userId, 'visit.session.ended', {
+        sessionId: session.id,
+        state: session.state,
+      });
+    }
     return session;
   }
 
@@ -607,6 +868,28 @@ export class AdminApiService {
   async systemHealth() {
     let database = 'ok';
     let migrationVersion: string | null = null;
+    let realtime = {
+      presence: {
+        online: null as number | null,
+        idle: null as number | null,
+        offline: null as number | null,
+        stale: null as number | null,
+      },
+      activeDeviceCount: null as number | null,
+      activeVisitParticipants: null as number | null,
+      activeVisitParticipantsCapped: false,
+      activeVisitParticipantSampleLimit: REALTIME_VISIT_SAMPLE_LIMIT,
+      staleAfterMinutes: REALTIME_STALE_PRESENCE_MINUTES,
+      lastSeen: [] as Array<{
+        userId: string;
+        uid: string;
+        username: string;
+        displayName: string | null;
+        status: string;
+        lastSeenAt: Date;
+        updatedAt: Date;
+      }>,
+    };
     try {
       await this.prisma.$queryRaw`SELECT 1`;
       const migrations = await this.prisma.$queryRaw<Array<{
@@ -620,6 +903,88 @@ export class AdminApiService {
         LIMIT 1
       `;
       migrationVersion = migrations[0]?.migration_name ?? null;
+      const now = new Date();
+      const staleBefore = new Date(
+        now.getTime() - REALTIME_STALE_PRESENCE_MINUTES * 60_000,
+      );
+      const [
+        totalAccounts,
+        online,
+        idle,
+        stale,
+        recentPresence,
+        activeDeviceCount,
+        activeVisitSessions,
+      ] = await Promise.all([
+        this.prisma.user.count(),
+        this.prisma.presence.count({ where: { status: 'online' } }),
+        this.prisma.presence.count({ where: { status: 'idle' } }),
+        this.prisma.presence.count({
+          where: {
+            status: { in: ['online', 'idle'] },
+            updatedAt: { lt: staleBefore },
+          },
+        }),
+        this.prisma.presence.findMany({
+          orderBy: stableOrderBy('lastSeenAt'),
+          take: REALTIME_LAST_SEEN_LIMIT,
+          select: {
+            userId: true,
+            status: true,
+            lastSeenAt: true,
+            updatedAt: true,
+            user: {
+              select: {
+                uid: true,
+                username: true,
+                profile: { select: { displayName: true } },
+              },
+            },
+          },
+        }),
+        this.prisma.deviceSession.count({
+          where: {
+            revokedAt: null,
+            expiresAt: { gt: now },
+          },
+        }),
+        this.prisma.visitSession.findMany({
+          where: {
+            state: { in: ['preparing', 'ready', 'active', 'ending'] },
+          },
+          orderBy: stableOrderBy('updatedAt'),
+          take: REALTIME_VISIT_SAMPLE_LIMIT,
+          select: {
+            visitorOwnerUserId: true,
+            hostUserId: true,
+          },
+        }),
+      ]);
+      const offline = Math.max(0, totalAccounts - online - idle);
+      const activeParticipants = new Set(
+        activeVisitSessions.flatMap((session) => [
+          session.visitorOwnerUserId,
+          session.hostUserId,
+        ]),
+      );
+      realtime = {
+        presence: { online, idle, offline, stale },
+        activeDeviceCount,
+        activeVisitParticipants: activeParticipants.size,
+        activeVisitParticipantsCapped:
+          activeVisitSessions.length === REALTIME_VISIT_SAMPLE_LIMIT,
+        activeVisitParticipantSampleLimit: REALTIME_VISIT_SAMPLE_LIMIT,
+        staleAfterMinutes: REALTIME_STALE_PRESENCE_MINUTES,
+        lastSeen: recentPresence.map((row) => ({
+          userId: row.userId,
+          uid: row.user.uid,
+          username: row.user.username,
+          displayName: row.user.profile?.displayName ?? null,
+          status: row.status,
+          lastSeenAt: row.lastSeenAt,
+          updatedAt: row.updatedAt,
+        })),
+      };
     } catch {
       database = 'unavailable';
     }
@@ -628,6 +993,7 @@ export class AdminApiService {
       database,
       r2: this.storage.capability,
       websocket: this.presence.getOperationalSnapshot(),
+      realtime,
       migrationVersion,
       protocolVersion: this.protocol.protocolVersion,
       serverVersion: this.protocol.serverVersion,
@@ -757,6 +1123,127 @@ export class AdminApiService {
     return pageEnvelope(items, total, page);
   }
 
+  private visitSessionDiagnostics(
+    session: Record<string, any>,
+    snapshotPack: { id: string; companionId: string; status: string } | null,
+    hostAwayConflict: boolean,
+    now = new Date(),
+  ) {
+    const readyDeadline = now.getTime()
+      - VISIT_RECONCILIATION_STALE_MINUTES * 60_000;
+    const heartbeatDeadline = now.getTime()
+      - (this.protocol.visitRuntimeConfig?.heartbeatTimeoutSeconds ?? 60) * 1_000;
+    const fallback = session.startedAt
+      ?? session.readyAt
+      ?? session.createdAt;
+    const staleHeartbeat = ['preparing', 'ready', 'active'].includes(session.state)
+      && (
+        new Date(session.visitorOwnerSeenAt ?? fallback).getTime() < heartbeatDeadline
+        || new Date(session.hostSeenAt ?? fallback).getTime() < heartbeatDeadline
+      );
+    const live = VISIT_LIVE_STATES.includes(session.state);
+    const assetAuthorizationFailure = live && (
+      !session.assetPackRefId
+      || !snapshotPack
+      || session.assetPackRefId !== snapshotPack.id
+      || snapshotPack.companionId !== session.networkCompanionId
+      || !['active', 'superseded'].includes(snapshotPack.status)
+    );
+    const failure = `${session.failureCode ?? ''} ${session.endReason ?? ''}`
+      .toUpperCase();
+    const values = [
+      {
+        code: 'READY_TIMEOUT',
+        label: 'Ready timeout',
+        active: ['preparing', 'ready'].includes(session.state)
+          && new Date(session.readyAt ?? session.createdAt).getTime() < readyDeadline,
+      },
+      {
+        code: 'STALE_HEARTBEAT',
+        label: 'Stale heartbeat',
+        active: staleHeartbeat,
+      },
+      {
+        code: 'HOST_AWAY_CONFLICT',
+        label: 'Host away conflict',
+        active: (live && hostAwayConflict)
+          || failure.includes('VISIT_HOST_COMPANION_AWAY'),
+      },
+      {
+        code: 'ASSET_AUTHORIZATION_FAILURE',
+        label: 'Asset authorization failure',
+        active: assetAuthorizationFailure
+          || failure.includes('VISIT_ASSET_NOT_AVAILABLE')
+          || failure.includes('ASSET_AUTHORIZATION'),
+      },
+      {
+        code: 'MISSING_ASSET_PACK',
+        label: 'Missing Asset Pack',
+        active: (live && !snapshotPack)
+          || failure.includes('VISIT_ASSET_NOT_AVAILABLE')
+          || failure.includes('MISSING_ASSET_PACK'),
+      },
+      {
+        code: 'STUCK_ENDING',
+        label: 'Session stuck in ending',
+        active: session.state === 'ending'
+          && new Date(session.endingAt ?? session.updatedAt).getTime() < readyDeadline,
+      },
+      {
+        code: 'ENDED_WITH_LIVE_REF',
+        label: 'Session ended but asset still referenced',
+        active: VISIT_TERMINAL_STATES.includes(session.state)
+          && Boolean(session.assetPackRefId),
+      },
+      {
+        code: 'RENDERER_FAILURE',
+        label: 'Renderer failure',
+        active: failure.includes('RENDERER'),
+      },
+    ];
+    return values;
+  }
+
+  private visitReconciliationStatus(
+    session: Record<string, any>,
+    now = new Date(),
+  ) {
+    if (VISIT_TERMINAL_STATES.includes(session.state)) {
+      return {
+        eligible: false,
+        code: 'TERMINAL_SESSION',
+        staleAfterMinutes: VISIT_RECONCILIATION_STALE_MINUTES,
+      };
+    }
+    if (!VISIT_LIVE_STATES.includes(session.state)) {
+      return {
+        eligible: false,
+        code: 'NON_LIVE_SESSION',
+        staleAfterMinutes: VISIT_RECONCILIATION_STALE_MINUTES,
+      };
+    }
+    const activity = [
+      session.updatedAt,
+      session.visitorOwnerSeenAt,
+      session.hostSeenAt,
+      session.startedAt,
+      session.readyAt,
+      session.endingAt,
+      session.createdAt,
+    ]
+      .filter(Boolean)
+      .map((value) => new Date(value).getTime());
+    const lastActivityAt = new Date(Math.max(...activity));
+    const eligible = now.getTime() - lastActivityAt.getTime()
+      >= VISIT_RECONCILIATION_STALE_MINUTES * 60_000;
+    return {
+      eligible,
+      code: eligible ? 'STALE_LIVE_SESSION' : 'HEALTHY_LIVE_SESSION',
+      staleAfterMinutes: VISIT_RECONCILIATION_STALE_MINUTES,
+      lastActivityAt,
+    };
+  }
+
   private requireReason(reason: string): void {
     const length = reason.trim().length;
     if (length < 4 || length > 500) {
@@ -767,6 +1254,14 @@ export class AdminApiService {
     }
   }
 }
+
+const ADMIN_ACCOUNT_DETAIL_LIMIT = 50;
+const REALTIME_LAST_SEEN_LIMIT = 50;
+const REALTIME_VISIT_SAMPLE_LIMIT = 1_000;
+const REALTIME_STALE_PRESENCE_MINUTES = 15;
+const VISIT_RECONCILIATION_STALE_MINUTES = 15;
+const VISIT_LIVE_STATES = ['preparing', 'ready', 'active', 'ending'];
+const VISIT_TERMINAL_STATES = ['ended', 'cancelled', 'failed'];
 
 const ADMIN_USER_SUMMARY = {
   id: true,
@@ -781,6 +1276,25 @@ const ADMIN_USER_SUMMARY = {
   updatedAt: true,
 } as const;
 
+const ADMIN_RELATED_USER_SELECT = {
+  id: true,
+  uid: true,
+  username: true,
+  friendCode: true,
+  profile: {
+    select: {
+      displayName: true,
+      avatarUrl: true,
+    },
+  },
+  presence: {
+    select: {
+      status: true,
+      lastSeenAt: true,
+    },
+  },
+} as const;
+
 const SAFE_DEVICE_SELECT = {
   id: true,
   deviceId: true,
@@ -788,6 +1302,48 @@ const SAFE_DEVICE_SELECT = {
   lastUsedAt: true,
   expiresAt: true,
   revokedAt: true,
+} as const;
+
+const ADMIN_NOTIFICATION_SELECT = {
+  id: true,
+  type: true,
+  title: true,
+  message: true,
+  read: true,
+  createdAt: true,
+} as const;
+
+const ADMIN_ACCOUNT_AUDIT_SELECT = {
+  id: true,
+  adminUserId: true,
+  action: true,
+  targetType: true,
+  targetId: true,
+  reason: true,
+  createdAt: true,
+} as const;
+
+const ADMIN_ACCOUNT_ASSET_PACK_SELECT = {
+  id: true,
+  companionId: true,
+  manifestHash: true,
+  schemaVersion: true,
+  status: true,
+  totalFiles: true,
+  totalBytes: true,
+  failureCode: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
+  activatedAt: true,
+  supersededAt: true,
+  companion: {
+    select: {
+      id: true,
+      name: true,
+      published: true,
+    },
+  },
 } as const;
 
 const ADMIN_COMPANION_SUMMARY = {
@@ -848,9 +1404,17 @@ function dateWhere(query: AdminListQueryDto) {
   return {
     createdAt: {
       ...(query.dateFrom ? { gte: new Date(query.dateFrom) } : {}),
-      ...(query.dateTo ? { lte: new Date(query.dateTo) } : {}),
+      ...(query.dateTo ? { lte: endOfDate(query.dateTo) } : {}),
     },
   };
+}
+
+function endOfDate(value: string): Date {
+  const date = new Date(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    date.setUTCHours(23, 59, 59, 999);
+  }
+  return date;
 }
 
 function normalizeBigInts<T extends Record<string, any>>(value: T): T {

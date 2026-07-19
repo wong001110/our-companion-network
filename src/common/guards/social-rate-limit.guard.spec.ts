@@ -1,7 +1,7 @@
 import { ExecutionContext } from '@nestjs/common';
 import { SocialRateLimitGuard } from './social-rate-limit.guard';
 
-function contextFor(userId: string, policy: string): ExecutionContext {
+function contextFor(userId: string, _policy: string): ExecutionContext {
   return {
     switchToHttp: () => ({ getRequest: () => ({ user: { id: userId } }) }),
     getHandler: () => ({}),

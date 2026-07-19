@@ -1,4 +1,5 @@
 import { BrowserAuthService } from './browser-auth.service';
+import { BROWSER_COOKIE_NAMES } from '../common/browser-security.service';
 
 describe('BrowserAuthService', () => {
   it('sets secure cookies while keeping tokens out of the response body', async () => {
@@ -146,5 +147,63 @@ describe('BrowserAuthService', () => {
       id: 'admin-1',
       role: 'SUPERADMIN',
     });
+  });
+
+  it('logs out the authenticated device and clears every browser cookie on its original path', async () => {
+    const identity = {
+      logout: jest.fn().mockResolvedValue({ message: 'Logged out successfully' }),
+    };
+    const security = {
+      cookieOptions: jest.fn((
+        maxAge: number,
+        httpOnly: boolean,
+        path: string,
+      ) => ({ maxAge, httpOnly, path, secure: true, sameSite: 'strict' })),
+    };
+    const response = { clearCookie: jest.fn() };
+    const service = new BrowserAuthService(
+      identity as never,
+      {} as never,
+      {} as never,
+      security as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(service.logout(
+      'user-1',
+      'browser-device',
+      response as never,
+    )).resolves.toEqual({ loggedOut: true });
+    expect(identity.logout).toHaveBeenCalledWith(
+      'user-1',
+      'browser-device',
+      'browser-device',
+    );
+    expect(response.clearCookie).toHaveBeenCalledTimes(
+      Object.keys(BROWSER_COOKIE_NAMES).length,
+    );
+    expect(response.clearCookie).toHaveBeenCalledWith(
+      BROWSER_COOKIE_NAMES.csrf,
+      expect.objectContaining({ httpOnly: false, path: '/' }),
+    );
+    expect(response.clearCookie).toHaveBeenCalledWith(
+      BROWSER_COOKIE_NAMES.refresh,
+      expect.objectContaining({
+        httpOnly: true,
+        path: '/api/portal/auth',
+      }),
+    );
+    expect(response.clearCookie).toHaveBeenCalledWith(
+      BROWSER_COOKIE_NAMES.device,
+      expect.objectContaining({
+        httpOnly: true,
+        path: '/api/portal/auth',
+      }),
+    );
+    expect(response.clearCookie).toHaveBeenCalledWith(
+      BROWSER_COOKIE_NAMES.access,
+      expect.objectContaining({ httpOnly: true, path: '/api' }),
+    );
   });
 });

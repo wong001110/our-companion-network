@@ -89,6 +89,23 @@ describe('PresenceGateway multiple-device aggregation', () => {
     expect(presence.setOnline).toHaveBeenLastCalledWith('user-a');
   });
 
+  it('reports reconnects in a bounded rolling operational window', async () => {
+    const { gateway } = createGateway();
+    await gateway.handleConnection(socket('a'));
+    await gateway.handleDisconnect(socket('a'));
+    await gateway.handleConnection(socket('b'));
+
+    expect(gateway.getOperationalSnapshot()).toMatchObject({
+      reconnectCount: 1,
+      reconnectWindowMinutes: 15,
+    });
+
+    await jest.advanceTimersByTimeAsync(15 * 60_000 + 1);
+    expect(gateway.getOperationalSnapshot()).toMatchObject({
+      reconnectCount: 0,
+    });
+  });
+
   it('supports immediate offline only when zero grace is explicitly configured', async () => {
     const { gateway, presence } = createGateway({ PRESENCE_DISCONNECT_GRACE_SECONDS: '0' });
     const device = socket('a');

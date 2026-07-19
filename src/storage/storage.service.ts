@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  CopyObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -9,6 +11,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import type { GetObjectCommandOutput } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export interface StorageCapability {
@@ -24,6 +27,11 @@ export interface ObjectMetadata {
   sha256?: string;
 }
 
+export interface ObjectDigestMetadata extends ObjectMetadata {
+  sha256: string;
+  etag?: string;
+}
+
 export interface PresignedObjectUrl {
   url: string;
   expiresAt: string;
@@ -35,7 +43,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
   private readonly bucket?: string;
   private readonly uploadTtlSeconds: number;
   private readonly downloadTtlSeconds: number;
-  private readonly limitsValue: { maxFileBytes: number; maxPackBytes: number; maxPackFiles: number; uploadSessionTtlHours: number; maxUserStorageBytes: number; supersededPackRetentionDays: number };
+  private readonly limitsValue: { maxFileBytes: number; maxPackBytes: number; maxPackFiles: number; uploadSessionTtlHours: number; uploadUrlTtlSeconds: number; maxUserStorageBytes: number; supersededPackRetentionDays: number };
   private _capability: StorageCapability;
   private recoveryTimer?: NodeJS.Timeout;
 
@@ -50,7 +58,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     const supersededPackRetentionDays = configuredPositiveInt(config.get<string>('R2_SUPERSEDED_PACK_RETENTION_DAYS'), 30);
     this.uploadTtlSeconds = uploadTtlSeconds ?? 900;
     this.downloadTtlSeconds = downloadTtlSeconds ?? 900;
-    this.limitsValue = { maxFileBytes: maxFileBytes ?? 20 * 1024 * 1024, maxPackBytes: maxPackBytes ?? 500 * 1024 * 1024, maxPackFiles: maxPackFiles ?? 1000, uploadSessionTtlHours: uploadSessionTtlHours ?? 24, maxUserStorageBytes: maxUserStorageBytes ?? 2 * 1024 * 1024 * 1024, supersededPackRetentionDays: supersededPackRetentionDays ?? 30 };
+    this.limitsValue = { maxFileBytes: maxFileBytes ?? 20 * 1024 * 1024, maxPackBytes: maxPackBytes ?? 500 * 1024 * 1024, maxPackFiles: maxPackFiles ?? 1000, uploadSessionTtlHours: uploadSessionTtlHours ?? 24, uploadUrlTtlSeconds: this.uploadTtlSeconds, maxUserStorageBytes: maxUserStorageBytes ?? 2 * 1024 * 1024 * 1024, supersededPackRetentionDays: supersededPackRetentionDays ?? 30 };
     const accountId = config.get<string>('CLOUDFLARE_ACCOUNT_ID')?.trim();
     const bucket = config.get<string>('R2_BUCKET_NAME')?.trim();
     const accessKeyId = config.get<string>('R2_ACCESS_KEY_ID')?.trim();
@@ -96,13 +104,24 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     return this.capability;
   }
 
-  async createPutUrl(objectKey: string, mimeType: string, sha256: string): Promise<PresignedObjectUrl> {
+  async createPutUrl(
+    objectKey: string,
+    mimeType: string,
+    signingDate = new Date(),
+  ): Promise<PresignedObjectUrl> {
     this.requireAvailable();
     const expiresIn = this.uploadTtlSeconds;
     const url = await getSignedUrl(this.client!, new PutObjectCommand({
-      Bucket: this.bucket!, Key: objectKey, ContentType: mimeType, Metadata: { sha256 },
-    }), { expiresIn, unhoistableHeaders: new Set(['content-type', 'x-amz-meta-sha256']) });
-    return { url, expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString() };
+      Bucket: this.bucket!, Key: objectKey, ContentType: mimeType,
+    }), {
+      expiresIn,
+      signingDate,
+      unhoistableHeaders: new Set(['content-type']),
+    });
+    return {
+      url,
+      expiresAt: new Date(signingDate.getTime() + expiresIn * 1000).toISOString(),
+    };
   }
 
   async createGetUrl(objectKey: string): Promise<PresignedObjectUrl> {
@@ -119,6 +138,83 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
       return { sizeBytes: Number(result.ContentLength ?? 0), mimeType: result.ContentType, sha256: result.Metadata?.sha256 };
     } catch (error) {
       if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
+      this.markUnavailable();
+      throw error;
+    }
+  }
+
+  /**
+   * Streams an object through Node's SHA-256 implementation. The body is never
+   * buffered, and maxBytes aborts an oversized upload before it can consume
+   * unbounded application memory.
+   */
+  async inspectObjectSha256(objectKey: string, maxBytes: number): Promise<ObjectDigestMetadata | null> {
+    this.requireAvailable();
+    let result: GetObjectCommandOutput;
+    try {
+      result = await this.client!.send(new GetObjectCommand({
+        Bucket: this.bucket!,
+        Key: objectKey,
+      }));
+    } catch (error) {
+      if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
+      this.markUnavailable();
+      throw error;
+    }
+
+    if (!result.Body) {
+      throw new Error('ASSET_STORAGE_OBJECT_BODY_MISSING');
+    }
+    const hash = createHash('sha256');
+    let sizeBytes = 0;
+    try {
+      for await (const value of result.Body as AsyncIterable<Uint8Array | string>) {
+        const chunk = Buffer.from(value);
+        sizeBytes += chunk.byteLength;
+        if (sizeBytes > maxBytes) throw new Error('ASSET_STORAGE_OBJECT_TOO_LARGE');
+        hash.update(chunk);
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'ASSET_STORAGE_OBJECT_TOO_LARGE') {
+        this.markUnavailable();
+      }
+      throw error;
+    }
+    return {
+      sizeBytes,
+      mimeType: result.ContentType,
+      sha256: hash.digest('hex'),
+      etag: result.ETag,
+    };
+  }
+
+  /**
+   * Publishes a verified staging object to an immutable final key. The source
+   * ETag condition closes the verify/copy race if a bearer PUT URL is reused.
+   * Metadata is replaced with server-authored integrity data.
+   */
+  async copyVerifiedObject(
+    sourceKey: string,
+    destinationKey: string,
+    sourceEtag: string,
+    mimeType: string,
+    sha256: string,
+  ): Promise<void> {
+    this.requireAvailable();
+    try {
+      await this.client!.send(new CopyObjectCommand({
+        Bucket: this.bucket!,
+        Key: destinationKey,
+        CopySource: `${this.bucket!}/${sourceKey.split('/').map(encodeURIComponent).join('/')}`,
+        CopySourceIfMatch: sourceEtag,
+        MetadataDirective: 'REPLACE',
+        ContentType: mimeType,
+        Metadata: { sha256 },
+      }));
+    } catch (error) {
+      if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 412) {
+        throw new Error('ASSET_INTEGRITY_FAILED');
+      }
       this.markUnavailable();
       throw error;
     }
@@ -178,6 +274,30 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
       }
     }
     catch (error) { this.markUnavailable(); throw error; }
+  }
+
+  async deleteObjectPrefix(objectPrefix: string): Promise<void> {
+    const prefix = objectPrefix.endsWith('/') ? objectPrefix : `${objectPrefix}/`;
+    while (true) {
+      const keys = await this.listObjectKeys(prefix, 1_000);
+      if (keys.length === 0) break;
+      await this.deleteObjects(keys);
+    }
+    await this.assertObjectPrefixDeleted(prefix);
+  }
+
+  /**
+   * R2's bulk-delete response is not the final lifecycle boundary for an Asset
+   * Pack. Verify the pack's immutable prefix is empty before callers remove its
+   * database records. A remaining object keeps the caller's `deleting` claim in
+   * place so a later reconciliation can retry safely.
+   */
+  async assertObjectPrefixDeleted(objectPrefix: string): Promise<void> {
+    const prefix = objectPrefix.endsWith('/') ? objectPrefix : `${objectPrefix}/`;
+    const remaining = await this.listObjectKeys(prefix, 1);
+    if (remaining.length > 0) {
+      throw new Error('ASSET_STORAGE_DELETE_INCOMPLETE');
+    }
   }
 
   private requireAvailable() {

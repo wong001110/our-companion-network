@@ -28,18 +28,34 @@ export class FriendService {
     }
     const user = await this.prisma.user.findUnique({
       where: { uid: normalizedUid },
-      select: { id: true, uid: true, username: true, friendCode: true },
+      select: {
+        id: true,
+        uid: true,
+        username: true,
+        friendCode: true,
+        accountStatus: true,
+        deletionRequestedAt: true,
+      },
     });
-    if (!user) {
+    if (
+      !user
+      || user.accountStatus !== 'ACTIVE'
+      || user.deletionRequestedAt
+    ) {
       throw new NotFoundException({ code: 'SOCIAL_UID_NOT_FOUND', message: 'UID was not found' });
     }
+    const {
+      accountStatus: _accountStatus,
+      deletionRequestedAt: _deletionRequestedAt,
+      ...safeUser
+    } = user;
     this.logger.log(JSON.stringify({
       event: 'social-uid:lookup',
       requesterId: requesterId ?? null,
       resolvedUserId: user.id,
       uid: normalizedUid,
     }));
-    return this.withRelationship(user, requesterId, 'SOCIAL_UID_NOT_FOUND');
+    return this.withRelationship(safeUser, requesterId, 'SOCIAL_UID_NOT_FOUND');
   }
 
   async lookupByFriendCode(code: string, requesterId?: string) {
@@ -54,13 +70,24 @@ export class FriendService {
         uid: true,
         username: true,
         friendCode: true,
+        accountStatus: true,
+        deletionRequestedAt: true,
       },
     });
 
-    if (!user) {
+    if (
+      !user
+      || user.accountStatus !== 'ACTIVE'
+      || user.deletionRequestedAt
+    ) {
       throw new NotFoundException({ code: 'INVALID_FRIEND_CODE', message: 'Friend code was not found' });
     }
-    return this.withRelationship(user, requesterId, 'INVALID_FRIEND_CODE');
+    const {
+      accountStatus: _accountStatus,
+      deletionRequestedAt: _deletionRequestedAt,
+      ...safeUser
+    } = user;
+    return this.withRelationship(safeUser, requesterId, 'INVALID_FRIEND_CODE');
   }
 
   private async withRelationship<T extends { id: string }>(
@@ -88,63 +115,75 @@ export class FriendService {
       throw new ForbiddenException({ code: 'CANNOT_FRIEND_SELF', message: 'Social action is not allowed' });
     }
 
-    const receiver = await this.prisma.user.findUnique({
-      where: { id: dto.receiverId },
-    });
-
-    if (!receiver) {
-      throw new NotFoundException({ code: 'USER_NOT_FOUND', message: 'User was not found' });
-    }
-
-    const existingFriendship = await this.prisma.friendship.findFirst({
-      where: {
-        OR: [
-          { userId: senderId, friendId: dto.receiverId },
-          { userId: dto.receiverId, friendId: senderId },
-        ],
-      },
-    });
-
-    if (existingFriendship) {
-      throw new ConflictException({ code: 'FRIENDSHIP_ALREADY_EXISTS', message: 'Friendship already exists' });
-    }
-
-    const blocked = await this.prisma.blockedUser.findFirst({
-      where: {
-        OR: [
-          { blockerId: senderId, blockedId: dto.receiverId },
-          { blockerId: dto.receiverId, blockedId: senderId },
-        ],
-      },
-    });
-
-    if (blocked) {
-      throw new ForbiddenException({ code: 'SOCIAL_ACTION_NOT_ALLOWED', message: 'Social action is not allowed' });
-    }
-
-    const [direct, reverse] = await Promise.all([
-      this.prisma.friendRequest.findUnique({ where: { senderId_receiverId: { senderId, receiverId: dto.receiverId } } }),
-      this.prisma.friendRequest.findUnique({ where: { senderId_receiverId: { senderId: dto.receiverId, receiverId: senderId } } }),
-    ]);
-    if (reverse?.status === 'pending') return this.acceptFriendRequest(senderId, reverse.id);
-    if (direct?.status === 'pending') throw new ConflictException({ code: 'FRIEND_REQUEST_ALREADY_EXISTS', message: 'Friend request already exists' });
-
-    const request = await this.prisma.friendRequest.upsert({
-      where: { senderId_receiverId: { senderId, receiverId: dto.receiverId } },
-      create: { senderId, receiverId: dto.receiverId, status: 'pending' },
-      update: { status: 'pending', updatedAt: new Date() },
-      include: {
-        sender: {
-          select: { id: true, uid: true, username: true },
+    const result = await this.prisma.$transaction(async tx => {
+      await this.lockActiveParticipants(tx, senderId, dto.receiverId);
+      const existingFriendship = await tx.friendship.findFirst({
+        where: {
+          OR: [
+            { userId: senderId, friendId: dto.receiverId },
+            { userId: dto.receiverId, friendId: senderId },
+          ],
         },
-        receiver: {
-          select: { id: true, uid: true, username: true },
+      });
+      if (existingFriendship) {
+        throw new ConflictException({ code: 'FRIENDSHIP_ALREADY_EXISTS', message: 'Friendship already exists' });
+      }
+
+      const blocked = await tx.blockedUser.findFirst({
+        where: {
+          OR: [
+            { blockerId: senderId, blockedId: dto.receiverId },
+            { blockerId: dto.receiverId, blockedId: senderId },
+          ],
         },
-      },
+      });
+      if (blocked) {
+        throw new ForbiddenException({ code: 'SOCIAL_ACTION_NOT_ALLOWED', message: 'Social action is not allowed' });
+      }
+
+      const [direct, reverse] = await Promise.all([
+        tx.friendRequest.findUnique({ where: { senderId_receiverId: { senderId, receiverId: dto.receiverId } } }),
+        tx.friendRequest.findUnique({ where: { senderId_receiverId: { senderId: dto.receiverId, receiverId: senderId } } }),
+      ]);
+      if (reverse?.status === 'pending') {
+        return {
+          accepted: true as const,
+          request: await this.acceptFriendRequestInTransaction(
+            tx,
+            senderId,
+            reverse.id,
+          ),
+        };
+      }
+      if (direct?.status === 'pending') {
+        throw new ConflictException({ code: 'FRIEND_REQUEST_ALREADY_EXISTS', message: 'Friend request already exists' });
+      }
+      return {
+        accepted: false as const,
+        request: await tx.friendRequest.upsert({
+          where: { senderId_receiverId: { senderId, receiverId: dto.receiverId } },
+          create: { senderId, receiverId: dto.receiverId, status: 'pending' },
+          update: { status: 'pending', updatedAt: new Date() },
+          include: {
+            sender: {
+              select: { id: true, uid: true, username: true },
+            },
+            receiver: {
+              select: { id: true, uid: true, username: true },
+            },
+          },
+        }),
+      };
     });
 
-    this.events.publishToUser(dto.receiverId, 'friend.request.created', { requestId: request.id });
-    return request;
+    if (result.accepted) {
+      this.publishFriendRequestAccepted(result.request);
+      return { message: 'Friend request accepted' };
+    }
+    this.events.publishToUser(dto.receiverId, 'friend.request.created', {
+      requestId: result.request.id,
+    });
+    return result.request;
   }
 
   async getIncomingRequests(userId: string) {
@@ -152,6 +191,10 @@ export class FriendService {
       where: {
         receiverId: userId,
         status: 'pending',
+        sender: {
+          accountStatus: 'ACTIVE',
+          deletionRequestedAt: null,
+        },
       },
       include: {
         sender: { select: { id: true, uid: true, username: true, friendCode: true } },
@@ -164,48 +207,44 @@ export class FriendService {
 
   async getOutgoingRequests(userId: string) {
     return this.prisma.friendRequest.findMany({
-      where: { senderId: userId, status: 'pending' },
+      where: {
+        senderId: userId,
+        status: 'pending',
+        receiver: {
+          accountStatus: 'ACTIVE',
+          deletionRequestedAt: null,
+        },
+      },
       include: { receiver: { select: { id: true, uid: true, username: true, friendCode: true } } },
       orderBy: { updatedAt: 'desc' },
     });
   }
 
   async acceptFriendRequest(userId: string, requestId: string) {
-    const request = await this.prisma.friendRequest.findUnique({
+    const initial = await this.prisma.friendRequest.findUnique({
       where: { id: requestId },
     });
-
-    if (!request) {
+    if (!initial) {
       throw new NotFoundException({ code: 'FRIEND_REQUEST_NOT_FOUND', message: 'Friend request was not found' });
     }
-
-    if (request.receiverId !== userId) {
+    if (initial.receiverId !== userId) {
       throw new ForbiddenException({ code: 'SOCIAL_ACTION_NOT_ALLOWED', message: 'Social action is not allowed' });
     }
-
-    if (request.status !== 'pending') {
-      throw new ConflictException({ code: 'FRIEND_REQUEST_NOT_PENDING', message: 'Friend request is not pending' });
-    }
-
+    let request: {
+      id: string;
+      senderId: string;
+      receiverId: string;
+      status: string;
+    };
     try {
-      await this.prisma.$transaction([
-        this.prisma.friendRequest.update({
-          where: { id: requestId },
-          data: { status: 'accepted' },
-        }),
-        this.prisma.friendship.create({
-          data: {
-            userId: request.senderId,
-            friendId: request.receiverId,
-          },
-        }),
-        this.prisma.friendship.create({
-          data: {
-            userId: request.receiverId,
-            friendId: request.senderId,
-          },
-        }),
-      ]);
+      request = await this.prisma.$transaction(async tx => {
+        await this.lockActiveParticipants(
+          tx,
+          initial.senderId,
+          initial.receiverId,
+        );
+        return this.acceptFriendRequestInTransaction(tx, userId, requestId);
+      });
     } catch (error) {
       // A parallel acceptance can race after both requests observed pending. Keep the API stable.
       if ((error as { code?: string }).code === 'P2002') {
@@ -214,11 +253,102 @@ export class FriendService {
       throw error;
     }
 
-    this.events.publishToUser(request.senderId, 'friend.request.updated', { requestId, status: 'accepted' });
-    this.events.publishToUser(request.receiverId, 'friend.request.updated', { requestId, status: 'accepted' });
-    this.events.publishToUser(request.senderId, 'friendship.created', { userId: request.receiverId });
-    this.events.publishToUser(request.receiverId, 'friendship.created', { userId: request.senderId });
+    this.publishFriendRequestAccepted(request);
     return { message: 'Friend request accepted' };
+  }
+
+  private async lockActiveParticipants(
+    tx: any,
+    firstUserId: string,
+    secondUserId: string,
+  ): Promise<void> {
+    const participantIds = [firstUserId, secondUserId].sort();
+    await tx.$queryRaw`
+      SELECT "id"
+      FROM "User"
+      WHERE "id" IN (${participantIds[0]}, ${participantIds[1]})
+      ORDER BY "id"
+      FOR UPDATE
+    `;
+    const activeParticipants = await tx.user.count({
+      where: {
+        id: { in: participantIds },
+        accountStatus: 'ACTIVE',
+        deletionRequestedAt: null,
+      },
+    });
+    if (activeParticipants !== 2) {
+      throw new NotFoundException({
+        code: 'USER_NOT_FOUND',
+        message: 'User was not found',
+      });
+    }
+  }
+
+  private async acceptFriendRequestInTransaction(
+    tx: any,
+    receiverId: string,
+    requestId: string,
+  ) {
+    await tx.$queryRaw`
+      SELECT "id"
+      FROM "FriendRequest"
+      WHERE "id" = ${requestId}
+      FOR UPDATE
+    `;
+    const request = await tx.friendRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!request) {
+      throw new NotFoundException({
+        code: 'FRIEND_REQUEST_NOT_FOUND',
+        message: 'Friend request was not found',
+      });
+    }
+    if (request.receiverId !== receiverId) {
+      throw new ForbiddenException({
+        code: 'SOCIAL_ACTION_NOT_ALLOWED',
+        message: 'Social action is not allowed',
+      });
+    }
+    if (request.status !== 'pending') {
+      throw new ConflictException({
+        code: 'FRIEND_REQUEST_NOT_PENDING',
+        message: 'Friend request is not pending',
+      });
+    }
+    await tx.friendRequest.update({
+      where: { id: requestId },
+      data: { status: 'accepted' },
+    });
+    await tx.friendship.create({
+      data: { userId: request.senderId, friendId: request.receiverId },
+    });
+    await tx.friendship.create({
+      data: { userId: request.receiverId, friendId: request.senderId },
+    });
+    return request;
+  }
+
+  private publishFriendRequestAccepted(request: {
+    id: string;
+    senderId: string;
+    receiverId: string;
+  }) {
+    this.events.publishToUser(request.senderId, 'friend.request.updated', {
+      requestId: request.id,
+      status: 'accepted',
+    });
+    this.events.publishToUser(request.receiverId, 'friend.request.updated', {
+      requestId: request.id,
+      status: 'accepted',
+    });
+    this.events.publishToUser(request.senderId, 'friendship.created', {
+      userId: request.receiverId,
+    });
+    this.events.publishToUser(request.receiverId, 'friendship.created', {
+      userId: request.senderId,
+    });
   }
 
   async rejectFriendRequest(userId: string, requestId: string) {
@@ -259,7 +389,7 @@ export class FriendService {
 
   async getFriends(userId: string) {
     const friendships = await this.prisma.friendship.findMany({
-      where: { userId },
+      where: { userId, friend: { accountStatus: 'ACTIVE' } },
       include: {
         friend: {
           select: {

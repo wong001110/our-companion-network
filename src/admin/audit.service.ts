@@ -13,6 +13,7 @@ export const ADMIN_AUDIT_ACTIONS = {
   RESTORE_ACCOUNT: 'RESTORE_ACCOUNT',
   UNPUBLISH_COMPANION: 'UNPUBLISH_COMPANION',
   END_VISIT_SESSION: 'END_VISIT_SESSION',
+  RECONCILE_VISIT_SESSION: 'RECONCILE_VISIT_SESSION',
   CANCEL_VISIT_INVITATION: 'CANCEL_VISIT_INVITATION',
   DELETE_ASSET_PACK: 'DELETE_ASSET_PACK',
   RUN_STORAGE_CLEANUP: 'RUN_STORAGE_CLEANUP',
@@ -70,7 +71,7 @@ export class AuditService {
       ...((filters.dateFrom || filters.dateTo) ? {
         createdAt: {
           ...(filters.dateFrom ? { gte: new Date(filters.dateFrom) } : {}),
-          ...(filters.dateTo ? { lte: new Date(filters.dateTo) } : {}),
+          ...(filters.dateTo ? { lte: endOfDate(filters.dateTo) } : {}),
         },
       } : {}),
     };
@@ -85,4 +86,12 @@ export class AuditService {
     ]);
     return pageEnvelope(items, total, page);
   }
+}
+
+function endOfDate(value: string): Date {
+  const date = new Date(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    date.setUTCHours(23, 59, 59, 999);
+  }
+  return date;
 }

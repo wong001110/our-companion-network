@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { UserAccountStatus, UserRole } from '@prisma/client';
 import { AdminRoleService } from './admin-role.service';
 

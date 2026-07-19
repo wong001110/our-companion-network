@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { Server, Socket } from 'socket.io';
+import { Server } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProtocolConfigService } from './protocol-config.service';
 

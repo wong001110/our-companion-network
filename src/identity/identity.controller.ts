@@ -4,7 +4,6 @@ import {
   Get,
   Body,
   UseGuards,
-  Request,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { IdentityService } from './identity.service';

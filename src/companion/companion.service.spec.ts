@@ -44,9 +44,14 @@ describe('CompanionService final asset-pack lifecycle', () => {
 
   it('requires activation when an otherwise reusable active pack is orphaned from its companion pointer', async () => {
     const orphan = { ...uploadPack('uploading'), status: 'active', companion: { activeAssetPackId: 'other-pack' } };
-    const prisma = {
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', deletionRequestedAt: null }) },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: orphan.companionId, ownerUserId: 'user-1' }) },
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue(orphan) },
+    };
+    const prisma = {
+      $transaction: jest.fn((operation) => operation(tx)),
     };
     const storage = { capability: { uploadsEnabled: true }, limits: { maxFileBytes: 10, maxPackBytes: 10, maxPackFiles: 10 } };
     const service = new CompanionService(prisma as never, storage as never, {} as never);
@@ -58,6 +63,105 @@ describe('CompanionService final asset-pack lifecycle', () => {
       totalFiles: orphan.totalFiles,
       totalBytes: Number(orphan.totalBytes),
     })).resolves.toMatchObject({ reused: true, requiresActivation: true, assetPack: { id: orphan.id } });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not initiate an Asset Pack after account deletion has been requested', async () => {
+    const pack = uploadPack();
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', deletionRequestedAt: new Date() }) },
+      networkCompanion: { findUnique: jest.fn() },
+      companionAssetPack: { findUnique: jest.fn(), aggregate: jest.fn(), create: jest.fn() },
+    };
+    const prisma = { $transaction: jest.fn((operation) => operation(tx)) };
+    const storage = {
+      capability: { uploadsEnabled: true },
+      limits: { maxFileBytes: 10, maxPackBytes: 10, maxPackFiles: 10, maxUserStorageBytes: 100 },
+    };
+    const service = new CompanionService(prisma as never, storage as never, {} as never);
+
+    await expect(service.initiateAssetPack('user-1', pack.companionId, {
+      manifest: pack.manifest,
+      manifestHash: pack.manifestHash,
+      schemaVersion: 1,
+      totalFiles: pack.totalFiles,
+      totalBytes: Number(pack.totalBytes),
+    })).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ACCOUNT_DELETION_PENDING' }) });
+    expect(tx.networkCompanion.findUnique).not.toHaveBeenCalled();
+    expect(tx.companionAssetPack.create).not.toHaveBeenCalled();
+  });
+
+  it('persists the exact upload signing time before issuing staging URLs', async () => {
+    const pack = uploadPack();
+    const file = pack.files[0];
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', deletionRequestedAt: null }) },
+      companionAssetPack: { updateMany },
+    };
+    const createPutUrl = jest.fn().mockResolvedValue({
+      url: 'https://upload.invalid/staging',
+      expiresAt: new Date(now.getTime() + 900_000).toISOString(),
+    });
+    const prisma = {
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue(pack) },
+      companionAssetFile: { findMany: jest.fn().mockResolvedValue([file]) },
+      $transaction: jest.fn((operation) => operation(tx)),
+    };
+    const storage = {
+      capability: { uploadsEnabled: true },
+      limits: { uploadSessionTtlHours: 24 },
+      createPutUrl,
+    };
+    const service = new CompanionService(prisma as never, storage as never, {} as never);
+
+    await expect(service.createUploadUrls('user-1', pack.id, [file.id])).resolves.toEqual({
+      uploads: [{
+        fileId: file.id,
+        relativePath: file.relativePath,
+        uploadUrl: 'https://upload.invalid/staging',
+        expiresAt: expect.any(String),
+        requiredHeaders: { 'content-type': file.mimeType },
+      }],
+    });
+
+    const issuedAt = updateMany.mock.calls[0][0].data.lastUploadUrlIssuedAt;
+    expect(issuedAt).toBeInstanceOf(Date);
+    expect(createPutUrl).toHaveBeenCalledWith(
+      `${pack.objectPrefix}/staging/${file.id}`,
+      file.mimeType,
+      issuedAt,
+    );
+    expect(updateMany.mock.invocationCallOrder[0]).toBeLessThan(createPutUrl.mock.invocationCallOrder[0]);
+  });
+
+  it('does not sign staging URLs after account deletion has been requested', async () => {
+    const pack = uploadPack();
+    const file = pack.files[0];
+    const updateMany = jest.fn();
+    const createPutUrl = jest.fn();
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', deletionRequestedAt: new Date() }) },
+      companionAssetPack: { updateMany },
+    };
+    const prisma = {
+      companionAssetPack: { findUnique: jest.fn().mockResolvedValue(pack) },
+      companionAssetFile: { findMany: jest.fn().mockResolvedValue([file]) },
+      $transaction: jest.fn((operation) => operation(tx)),
+    };
+    const service = new CompanionService(prisma as never, {
+      capability: { uploadsEnabled: true },
+      limits: { uploadSessionTtlHours: 24 },
+      createPutUrl,
+    } as never, {} as never);
+
+    await expect(service.createUploadUrls('user-1', pack.id, [file.id]))
+      .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ACCOUNT_DELETION_PENDING' }) });
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(createPutUrl).not.toHaveBeenCalled();
   });
 
   it('skips cleanup when reactivation wins the superseded claim', async () => {
@@ -77,9 +181,13 @@ describe('CompanionService final asset-pack lifecycle', () => {
   });
 
   it('keeps a claimed deleting pack for a later retry when R2 deletion fails', async () => {
-    const prisma = { companionAssetPack: { findMany: jest.fn().mockResolvedValue([{ id: 'pack-1', status: 'deleting', objectPrefix: 'redacted', files: [] }]), delete: jest.fn() } };
+    const prisma = { companionAssetPack: { findMany: jest.fn().mockResolvedValue([{ id: 'pack-1', status: 'deleting', objectPrefix: 'redacted', files: [] }]), updateMany: jest.fn().mockResolvedValue({ count: 1 }), delete: jest.fn() } };
     const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 }, deleteObjects: jest.fn().mockRejectedValue(new Error('unavailable')) } as never, {} as never);
     await expect(service.cleanupSupersededPacks()).rejects.toThrow('unavailable');
+    expect(prisma.companionAssetPack.updateMany).toHaveBeenCalledWith({
+      where: { id: 'pack-1', status: 'deleting' },
+      data: { failureCode: 'ASSET_CLEANUP_FAILED' },
+    });
     expect(prisma.companionAssetPack.delete).not.toHaveBeenCalled();
   });
 
@@ -198,7 +306,10 @@ describe('CompanionService final asset-pack lifecycle', () => {
     };
     const storage = {
       capability: { uploadsEnabled: true }, limits: { uploadSessionTtlHours: 24, maxFileBytes: 10, maxPackBytes: 10, maxPackFiles: 10 },
-      headObject: jest.fn().mockResolvedValue({ sizeBytes: 1, mimeType: 'image/png', sha256: 'a'.repeat(64) }), putManifest: jest.fn(),
+      inspectObjectSha256: jest.fn().mockResolvedValue({ sizeBytes: 1, mimeType: 'image/png', sha256: 'a'.repeat(64), etag: '"fixture-etag"' }),
+      copyVerifiedObject: jest.fn(),
+      putManifest: jest.fn(),
+      deleteObjectPrefix: jest.fn(),
     };
     const service = new CompanionService(prisma as never, storage as never, { publishToUser: jest.fn() } as never);
 
@@ -206,6 +317,41 @@ describe('CompanionService final asset-pack lifecycle', () => {
     expect(prisma.companionAssetPack.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { id: uploading.id, status: 'uploading' }, data: expect.objectContaining({ status: 'verifying' }) }));
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: expect.objectContaining({ id: verifying.id, status: 'verifying' }), data: expect.objectContaining({ status: 'active' }) }));
+    expect(storage.copyVerifiedObject).toHaveBeenCalledTimes(verifying.files.length);
+    expect(storage.deleteObjectPrefix).toHaveBeenCalledWith(`${verifying.objectPrefix}/staging`);
+    expect(storage.deleteObjectPrefix.mock.invocationCallOrder[0]).toBeLessThan(prisma.$transaction.mock.invocationCallOrder[0]);
+  });
+
+  it('rejects same-size staging bytes with the wrong SHA-256 before publishing', async () => {
+    const uploading = uploadPack('uploading');
+    const verifying = uploadPack('verifying');
+    const copyVerifiedObject = jest.fn();
+    const prisma = {
+      companionAssetPack: {
+        findUnique: jest.fn().mockResolvedValueOnce(uploading).mockResolvedValueOnce(verifying),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const storage = {
+      capability: { uploadsEnabled: true },
+      limits: { uploadSessionTtlHours: 24 },
+      inspectObjectSha256: jest.fn().mockResolvedValue({
+        sizeBytes: 1,
+        mimeType: 'image/png',
+        sha256: 'b'.repeat(64),
+        etag: '"wrong-bytes"',
+      }),
+      copyVerifiedObject,
+    };
+    const service = new CompanionService(prisma as never, storage as never, {} as never);
+
+    await expect(service.completeAssetPack('user-1', uploading.id))
+      .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_INTEGRITY_FAILED' }) });
+    expect(copyVerifiedObject).not.toHaveBeenCalled();
+    expect(prisma.companionAssetPack.updateMany).toHaveBeenLastCalledWith({
+      where: { id: uploading.id, status: 'verifying' },
+      data: { status: 'failed', failureCode: 'ASSET_INTEGRITY_FAILED' },
+    });
   });
 
   it('does not claim a recently started verification for abandonment cleanup', async () => {

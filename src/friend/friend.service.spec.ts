@@ -1,6 +1,25 @@
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { FriendService } from './friend.service';
 
+function withTransaction(
+  prisma: Record<string, any>,
+  activeParticipants = 2,
+) {
+  const tx = {
+    ...prisma,
+    $queryRaw: jest.fn(),
+    user: {
+      ...(prisma.user ?? {}),
+      count: jest.fn().mockResolvedValue(activeParticipants),
+    },
+  };
+  return {
+    ...prisma,
+    $transaction: jest.fn((operation: (client: typeof tx) => unknown) =>
+      operation(tx)),
+  };
+}
+
 describe('FriendService S2 rules', () => {
   const eventPublisher = { publishToUser: jest.fn() };
 
@@ -9,6 +28,7 @@ describe('FriendService S2 rules', () => {
   it('looks up UID case-insensitively without exposing email', async () => {
     const findUnique = jest.fn().mockResolvedValue({
       id: 'user-b', uid: 'OC-7K4M92QX', username: 'Same Name', friendCode: 'ABCDEF12',
+      accountStatus: 'ACTIVE', deletionRequestedAt: null,
     });
     const service = new FriendService({ user: { findUnique } } as never, eventPublisher as never);
     const result = await service.lookupByUid(' oc-7k4m92qx ');
@@ -30,6 +50,35 @@ describe('FriendService S2 rules', () => {
     });
   });
 
+  it('hides deletion-pending accounts from lookup and new requests', async () => {
+    const pending = {
+      id: 'user-b',
+      uid: 'OC-7K4M92QX',
+      username: 'Leaving',
+      friendCode: 'ABCDEF12',
+      accountStatus: 'SUSPENDED',
+      deletionRequestedAt: new Date(),
+    };
+    const lookupService = new FriendService({
+      user: { findUnique: jest.fn().mockResolvedValue(pending) },
+    } as never, eventPublisher as never);
+
+    await expect(lookupService.lookupByUid(pending.uid)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'SOCIAL_UID_NOT_FOUND' }),
+    });
+    const requestService = new FriendService(withTransaction({
+      user: { findUnique: jest.fn().mockResolvedValue(pending) },
+      friendship: { findFirst: jest.fn() },
+      blockedUser: { findFirst: jest.fn() },
+      friendRequest: { findUnique: jest.fn(), upsert: jest.fn() },
+    }, 1) as never, eventPublisher as never);
+    await expect(requestService.sendFriendRequest('user-a', {
+      receiverId: pending.id,
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'USER_NOT_FOUND' }),
+    });
+  });
+
   it('rejects a request to oneself with the stable social code', async () => {
     const service = new FriendService({} as never, eventPublisher as never);
     await expect(service.sendFriendRequest('user-a', { receiverId: 'user-a' })).rejects.toMatchObject<Partial<ForbiddenException>>({});
@@ -38,7 +87,7 @@ describe('FriendService S2 rules', () => {
   it('reopens a terminal directed request so a rejected request can be resent', async () => {
     const request = { id: 'request-1', senderId: 'user-a', receiverId: 'user-b', status: 'pending', sender: { id: 'user-a', username: 'a' }, receiver: { id: 'user-b', username: 'b' } };
     const prisma = {
-      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b' }) },
+      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b', accountStatus: 'ACTIVE', deletionRequestedAt: null }) },
       friendship: { findFirst: jest.fn().mockResolvedValue(null) },
       blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
       friendRequest: {
@@ -46,7 +95,7 @@ describe('FriendService S2 rules', () => {
         upsert: jest.fn().mockResolvedValue(request),
       },
     };
-    const service = new FriendService(prisma as never, eventPublisher as never);
+    const service = new FriendService(withTransaction(prisma) as never, eventPublisher as never);
     await expect(service.sendFriendRequest('user-a', { receiverId: 'user-b' })).resolves.toEqual(request);
     expect(prisma.friendRequest.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ status: 'pending', updatedAt: expect.any(Date) }) }));
     expect(eventPublisher.publishToUser).toHaveBeenCalledWith('user-b', 'friend.request.created', { requestId: 'request-1' });
@@ -54,7 +103,7 @@ describe('FriendService S2 rules', () => {
 
   it('cancels pending requests in both directions when blocking', async () => {
     const prisma = {
-      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b' }) },
+      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b', accountStatus: 'ACTIVE', deletionRequestedAt: null }) },
       blockedUser: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({}) },
       friendship: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       friendRequest: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
@@ -68,7 +117,7 @@ describe('FriendService S2 rules', () => {
 
   it('rejects requests to nonexistent users before creating social records', async () => {
     const prisma = { user: { findUnique: jest.fn().mockResolvedValue(null) } };
-    const service = new FriendService(prisma as never, eventPublisher as never);
+    const service = new FriendService(withTransaction(prisma, 1) as never, eventPublisher as never);
     await expect(service.sendFriendRequest('user-a', { receiverId: 'user-b' })).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -100,16 +149,16 @@ describe('FriendService S2 rules', () => {
 
   it('rejects an existing friendship and a duplicate directed pending request', async () => {
     const base = {
-      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b' }) },
+      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-b', accountStatus: 'ACTIVE', deletionRequestedAt: null }) },
       blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
     };
-    const existingFriendService = new FriendService({ ...base, friendship: { findFirst: jest.fn().mockResolvedValue({}) } } as never, eventPublisher as never);
+    const existingFriendService = new FriendService(withTransaction({ ...base, friendship: { findFirst: jest.fn().mockResolvedValue({}) } }) as never, eventPublisher as never);
     await expect(existingFriendService.sendFriendRequest('user-a', { receiverId: 'user-b' })).rejects.toBeInstanceOf(ConflictException);
-    const duplicateRequestService = new FriendService({
+    const duplicateRequestService = new FriendService(withTransaction({
       ...base,
       friendship: { findFirst: jest.fn().mockResolvedValue(null) },
       friendRequest: { findUnique: jest.fn().mockResolvedValueOnce({ id: 'request-1', status: 'pending' }).mockResolvedValueOnce(null) },
-    } as never, eventPublisher as never);
+    }) as never, eventPublisher as never);
     await expect(duplicateRequestService.sendFriendRequest('user-a', { receiverId: 'user-b' })).rejects.toBeInstanceOf(ConflictException);
   });
 
@@ -125,6 +174,55 @@ describe('FriendService S2 rules', () => {
     };
     const service = new FriendService(prisma as never, eventPublisher as never);
     await expect(service.acceptFriendRequest('user-b', request.id)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'FRIENDSHIP_ALREADY_EXISTS' }) });
+  });
+
+  it('does not accept an old request after either participant starts deletion', async () => {
+    const request = {
+      id: 'request-1',
+      senderId: 'user-a',
+      receiverId: 'user-b',
+      status: 'pending',
+    };
+    const friendshipCreate = jest.fn();
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { count: jest.fn().mockResolvedValue(1) },
+      friendRequest: {
+        findUnique: jest.fn().mockResolvedValue(request),
+        update: jest.fn(),
+      },
+      friendship: { create: friendshipCreate },
+    };
+    const service = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+      $transaction: jest.fn((operation: (client: typeof tx) => unknown) =>
+        operation(tx)),
+    } as never, eventPublisher as never);
+
+    await expect(service.acceptFriendRequest('user-b', request.id))
+      .rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'USER_NOT_FOUND' }),
+      });
+    expect(friendshipCreate).not.toHaveBeenCalled();
+  });
+
+  it('hides pending requests whose counterpart is no longer active', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new FriendService({
+      friendRequest: { findMany },
+    } as never, eventPublisher as never);
+
+    await service.getIncomingRequests('user-b');
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        receiverId: 'user-b',
+        status: 'pending',
+        sender: {
+          accountStatus: 'ACTIVE',
+          deletionRequestedAt: null,
+        },
+      },
+    }));
   });
 
   it('allows only the sender to cancel a pending request', async () => {

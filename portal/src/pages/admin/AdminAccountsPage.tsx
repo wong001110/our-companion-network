@@ -1,7 +1,16 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
-import { Laptop, ShieldAlert, UserRoundCheck, UsersRound } from 'lucide-react';
+import {
+  Bell,
+  CalendarClock,
+  Laptop,
+  PackageOpen,
+  ScrollText,
+  ShieldAlert,
+  UserRoundCheck,
+  UsersRound,
+} from 'lucide-react';
 import { api, jsonBody, queryString, type PageEnvelope } from '../../lib/api';
 import { formatDate, sentenceCase, shortId } from '../../lib/format';
 import { ListFilters, type ListFilterValues } from '../../components/ListFilters';
@@ -32,7 +41,99 @@ interface Account {
   presence?: { status: string; lastSeenAt: string | null } | null;
   deviceSessions?: Array<{ id: string; deviceId: string; lastUsedAt: string; expiresAt: string; revokedAt: string | null }>;
   networkCompanions?: Array<{ id: string; name: string; published: boolean }>;
+  assetPacks?: {
+    total: number;
+    truncated: boolean;
+    items: AccountAssetPack[];
+  };
+  friends?: AccountRelationship[];
+  blockedRelationships?: {
+    outgoing: AccountRelationship[];
+    incoming: AccountRelationship[];
+  };
+  visitInvitations?: {
+    asVisitorOwner: AccountInvitation[];
+    asHost: AccountInvitation[];
+  };
+  visitSessions?: {
+    asVisitorOwner: AccountSession[];
+    asHost: AccountSession[];
+  };
+  notifications?: {
+    summary: { total: number; unread: number };
+    recent: Array<{
+      id: string;
+      type: string;
+      title: string;
+      message: string;
+      read: boolean;
+      createdAt: string;
+    }>;
+  };
+  auditRelatedEvents?: Array<{
+    id: string;
+    adminUserId: string;
+    action: string;
+    targetType: string;
+    targetId: string | null;
+    reason: string | null;
+    createdAt: string;
+  }>;
+  detailLimit?: number;
   _count?: Record<string, number>;
+}
+
+interface RelatedAccount {
+  id: string;
+  uid: string;
+  username: string;
+  friendCode: string;
+  profile: { displayName: string | null; avatarUrl: string | null } | null;
+  presence: { status: string; lastSeenAt: string | null } | null;
+}
+
+interface AccountRelationship {
+  id: string;
+  createdAt: string;
+  user: RelatedAccount;
+}
+
+interface AccountInvitation {
+  id: string;
+  visitorOwnerUserId: string;
+  hostUserId: string;
+  companionName: string;
+  status: string;
+  expiresAt: string;
+  updatedAt: string;
+}
+
+interface AccountSession {
+  id: string;
+  visitorOwnerUserId: string;
+  hostUserId: string;
+  state: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  updatedAt: string;
+}
+
+interface AccountAssetPack {
+  id: string;
+  companionId: string;
+  manifestHash: string;
+  schemaVersion: number;
+  status: string;
+  totalFiles: number;
+  totalBytes: number;
+  failureCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  companion: {
+    id: string;
+    name: string;
+    published: boolean;
+  };
 }
 
 const emptyFilters: ListFilterValues = { search: '', status: '', dateFrom: '', dateTo: '' };
@@ -93,6 +194,14 @@ function AccountDetail({ id }: { id: string }) {
     },
   });
   const account = query.data;
+  const invitations = account ? [
+    ...(account.visitInvitations?.asVisitorOwner ?? []).map((item) => ({ ...item, role: 'Visitor owner' })),
+    ...(account.visitInvitations?.asHost ?? []).map((item) => ({ ...item, role: 'Host' })),
+  ] : [];
+  const sessions = account ? [
+    ...(account.visitSessions?.asVisitorOwner ?? []).map((item) => ({ ...item, role: 'Visitor owner' })),
+    ...(account.visitSessions?.asHost ?? []).map((item) => ({ ...item, role: 'Host' })),
+  ] : [];
   const actionPath = dialog && typeof dialog === 'object'
     ? `/api/admin/users/${id}/devices/${dialog.deviceId}/revoke`
     : `/api/admin/users/${id}/${dialog}`;
@@ -137,7 +246,108 @@ function AccountDetail({ id }: { id: string }) {
               </div>
             </PaperCard>
           </div>
+          <PaperCard>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Bounded safe metadata</p>
+                <h2>Asset Packs</h2>
+              </div>
+              <PackageOpen />
+            </div>
+            <p>
+              Showing {account.assetPacks?.items.length ?? 0} of {account.assetPacks?.total ?? 0} packs.
+              {account.assetPacks?.truncated ? ` Only the latest ${account.detailLimit ?? 50} are shown.` : ''}
+            </p>
+            <div className="compact-list">
+              {account.assetPacks?.items.map((pack) => (
+                <div key={pack.id}>
+                  <span>
+                    <strong>{pack.companion.name}</strong>
+                    <small>
+                      {shortId(pack.id)} · Schema {pack.schemaVersion} · {pack.totalFiles} files · {pack.totalBytes.toLocaleString()} bytes
+                      {pack.failureCode ? ` · ${sentenceCase(pack.failureCode)}` : ''}
+                    </small>
+                  </span>
+                  <Stamp tone={pack.status === 'active' ? 'good' : pack.status === 'failed' ? 'bad' : 'neutral'}>
+                    {sentenceCase(pack.status)}
+                  </Stamp>
+                </div>
+              ))}
+              {!account.assetPacks?.items.length && <p className="muted">No Asset Pack rows.</p>}
+            </div>
+          </PaperCard>
+          <div className="inspector-columns">
+            <PaperCard>
+              <div className="section-heading"><div><p className="eyebrow">Actual relationships</p><h2>Friends</h2></div><UsersRound /></div>
+              <div className="compact-list">
+                {account.friends?.map((relationship) => <RelatedAccountRow key={relationship.id} relationship={relationship} />)}
+                {!account.friends?.length && <p className="muted">No friendship rows.</p>}
+              </div>
+            </PaperCard>
+            <PaperCard>
+              <div className="section-heading"><div><p className="eyebrow">Safety boundaries</p><h2>Blocked relationships</h2></div><ShieldAlert /></div>
+              <div className="compact-list">
+                {account.blockedRelationships?.outgoing.map((relationship) => <RelatedAccountRow key={`out-${relationship.id}`} relationship={relationship} label="Blocked by this account" />)}
+                {account.blockedRelationships?.incoming.map((relationship) => <RelatedAccountRow key={`in-${relationship.id}`} relationship={relationship} label="Blocked this account" />)}
+                {!account.blockedRelationships?.outgoing.length && !account.blockedRelationships?.incoming.length && <p className="muted">No blocked relationships.</p>}
+              </div>
+            </PaperCard>
+          </div>
+          <div className="inspector-columns">
+            <PaperCard>
+              <div className="section-heading"><div><p className="eyebrow">Recent invitations</p><h2>Visit invitations</h2></div><CalendarClock /></div>
+              <div className="compact-list">
+                {invitations.map((invitation) => (
+                  <div key={`${invitation.role}-${invitation.id}`}>
+                    <span><strong>{invitation.companionName}</strong><small>{invitation.role} · Updated {formatDate(invitation.updatedAt)}</small></span>
+                    <Stamp tone={invitation.status === 'pending' ? 'warn' : 'neutral'}>{sentenceCase(invitation.status)}</Stamp>
+                  </div>
+                ))}
+                {!invitations.length && <p className="muted">No invitation rows.</p>}
+              </div>
+            </PaperCard>
+            <PaperCard>
+              <div className="section-heading"><div><p className="eyebrow">Recent sessions</p><h2>Visit sessions</h2></div><CalendarClock /></div>
+              <div className="compact-list">
+                {sessions.map((session) => (
+                  <div key={`${session.role}-${session.id}`}>
+                    <span><strong>{shortId(session.id)}</strong><small>{session.role} · Updated {formatDate(session.updatedAt)}</small></span>
+                    <Stamp tone={session.state === 'active' ? 'good' : 'neutral'}>{sentenceCase(session.state)}</Stamp>
+                  </div>
+                ))}
+                {!sessions.length && <p className="muted">No session rows.</p>}
+              </div>
+            </PaperCard>
+          </div>
+          <div className="inspector-columns">
+            <PaperCard>
+              <div className="section-heading"><div><p className="eyebrow">Safe recent rows</p><h2>Notifications</h2></div><Bell /></div>
+              <p>{account.notifications?.summary.unread ?? 0} unread of {account.notifications?.summary.total ?? 0} total</p>
+              <div className="compact-list">
+                {account.notifications?.recent.map((notification) => (
+                  <div key={notification.id}>
+                    <span><strong>{notification.title}</strong><small>{notification.message} · {formatDate(notification.createdAt)}</small></span>
+                    <Stamp tone={notification.read ? 'neutral' : 'purple'}>{notification.read ? 'Read' : 'Unread'}</Stamp>
+                  </div>
+                ))}
+                {!account.notifications?.recent.length && <p className="muted">No notification rows.</p>}
+              </div>
+            </PaperCard>
+            <PaperCard>
+              <div className="section-heading"><div><p className="eyebrow">Privileged history</p><h2>Audit-related events</h2></div><ScrollText /></div>
+              <div className="compact-list">
+                {account.auditRelatedEvents?.map((event) => (
+                  <div key={event.id}>
+                    <span><strong>{sentenceCase(event.action)}</strong><small>{event.targetType} · {formatDate(event.createdAt)}{event.reason ? ` · ${event.reason}` : ''}</small></span>
+                    <Stamp tone="purple">{shortId(event.adminUserId)}</Stamp>
+                  </div>
+                ))}
+                {!account.auditRelatedEvents?.length && <p className="muted">No related audit rows.</p>}
+              </div>
+            </PaperCard>
+          </div>
           <PaperCard><p className="eyebrow">Relationship counts</p><h2>Network footprint</h2><div className="count-grid">{Object.entries(account._count ?? {}).map(([label, value]) => <div key={label}><strong>{value}</strong><span>{sentenceCase(label)}</span></div>)}</div></PaperCard>
+          <p className="muted">Detailed collections show at most {account.detailLimit ?? 50} recent rows per role.</p>
         </>
       )}
       <ConfirmDialog
@@ -155,5 +365,18 @@ function AccountDetail({ id }: { id: string }) {
       />
       {mutation.isError && <p className="inline-error" role="alert">{mutation.error.message}</p>}
     </>
+  );
+}
+
+function RelatedAccountRow({ relationship, label }: { relationship: AccountRelationship; label?: string }) {
+  const person = relationship.user;
+  return (
+    <div>
+      <span>
+        <strong>{person.profile?.displayName || person.username}</strong>
+        <small>{person.uid} · {label || `Friends since ${formatDate(relationship.createdAt, { dateStyle: 'medium' })}`}</small>
+      </span>
+      <Stamp tone={person.presence?.status === 'online' ? 'good' : 'neutral'}>{sentenceCase(person.presence?.status || 'offline')}</Stamp>
+    </div>
   );
 }

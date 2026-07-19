@@ -36,6 +36,28 @@ export interface SystemHealth {
   database: string;
   r2: Record<string, unknown> | string;
   websocket: Record<string, unknown>;
+  realtime?: {
+    presence: {
+      online: number | null;
+      idle: number | null;
+      offline: number | null;
+      stale: number | null;
+    };
+    activeDeviceCount: number | null;
+    activeVisitParticipants: number | null;
+    activeVisitParticipantsCapped: boolean;
+    activeVisitParticipantSampleLimit: number;
+    staleAfterMinutes: number;
+    lastSeen: Array<{
+      userId: string;
+      uid: string;
+      username: string;
+      displayName: string | null;
+      status: string;
+      lastSeenAt: string;
+      updatedAt: string;
+    }>;
+  };
   migrationVersion: string | null;
   protocolVersion: string;
   serverVersion: string;

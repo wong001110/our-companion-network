@@ -1,13 +1,19 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { Activity, CircleX, ClockAlert, Route, Sparkles } from 'lucide-react';
+import { Activity, CircleX, ClockAlert, Route, Sparkles, TriangleAlert, Wrench } from 'lucide-react';
 import { api, jsonBody, queryString, type PageEnvelope } from '../../lib/api';
 import { formatDate, sentenceCase, shortId } from '../../lib/format';
 import { ListFilters, type ListFilterValues } from '../../components/ListFilters';
 import { Button, ConfirmDialog, EmptyState, ErrorState, PageHeader, Pagination, PaperCard, SkeletonGrid, Stamp } from '../../components/ui';
 
-interface AdminVisit {
+interface VisitDiagnostic {
+  code: string;
+  label: string;
+  active: boolean;
+}
+
+export interface AdminVisit {
   id: string;
   invitationId?: string;
   visitorOwnerUserId: string;
@@ -31,12 +37,30 @@ interface AdminVisit {
   expiresAt?: string | null;
   respondedAt?: string | null;
   cancelledAt?: string | null;
+  invitationAcceptedAt?: string | null;
+  diagnostics?: VisitDiagnostic[];
+  reconciliation?: {
+    eligible: boolean;
+    code: string;
+    staleAfterMinutes: number;
+    lastActivityAt?: string;
+  };
   createdAt: string;
   updatedAt: string;
 }
 
 const sessionStatuses = ['preparing', 'ready', 'active', 'ending', 'ended', 'cancelled', 'failed'];
 const invitationStatuses = ['pending', 'accepted', 'declined', 'cancelled', 'expired'];
+export const VISIT_DIAGNOSTIC_LABELS = [
+  ['READY_TIMEOUT', 'Ready timeout'],
+  ['STALE_HEARTBEAT', 'Stale heartbeat'],
+  ['HOST_AWAY_CONFLICT', 'Host away conflict'],
+  ['ASSET_AUTHORIZATION_FAILURE', 'Asset authorization failure'],
+  ['MISSING_ASSET_PACK', 'Missing Asset Pack'],
+  ['STUCK_ENDING', 'Session stuck in ending'],
+  ['ENDED_WITH_LIVE_REF', 'Session ended but asset still referenced'],
+  ['RENDERER_FAILURE', 'Renderer failure'],
+] as const;
 
 export function AdminVisitsPage() {
   const { id } = useParams();
@@ -102,26 +126,21 @@ function VisitList() {
 
 function VisitDetail({ id }: { id: string }) {
   const [reason, setReason] = useState('');
-  const [confirm, setConfirm] = useState(false);
+  const [confirm, setConfirm] = useState<'end' | 'reconcile' | null>(null);
+  const closeConfirm = useCallback(() => {
+    setConfirm(null);
+    setReason('');
+  }, []);
   const client = useQueryClient();
   const query = useQuery({ queryKey: ['admin-visit', id], queryFn: () => api<AdminVisit>(`/api/admin/visit-sessions/${id}`) });
   const mutation = useMutation({
-    mutationFn: () => api(`/api/admin/visit-sessions/${id}/end`, { method: 'POST', ...jsonBody({ reason }) }),
-    onSuccess: () => { setConfirm(false); setReason(''); void client.invalidateQueries({ queryKey: ['admin-visit', id] }); },
+    mutationFn: (action: 'end' | 'reconcile') => api(`/api/admin/visit-sessions/${id}/${action}`, { method: 'POST', ...jsonBody({ reason }) }),
+    onSuccess: () => { setConfirm(null); setReason(''); void client.invalidateQueries({ queryKey: ['admin-visit', id] }); },
   });
   const visit = query.data;
   const state = visit?.state || 'unknown';
-  const timeline = visit ? [
-    ['Invitation created', visit.createdAt],
-    ['Asset authorized', visit.assetPackRefId ? visit.createdAt : null],
-    ['Visitor owner ready', visit.visitorOwnerReadyAt],
-    ['Host ready', visit.hostReadyAt],
-    ['Session ready', visit.readyAt],
-    ['Session active', visit.startedAt],
-    ['Session ending', visit.endingAt],
-    ['Session ended', visit.endedAt],
-    ['Cleanup completed', visit.endedAt && !visit.assetPackRefId ? visit.endedAt : null],
-  ] : [];
+  const timeline = visit ? visitTimeline(visit) : [];
+  const diagnostics = visit ? visitDiagnostics(visit) : [];
   return (
     <>
       <PageHeader eyebrow="Caretaker Desk · Visit debugger" title="Session timeline" description="Readiness, heartbeats, asset references, and terminal cleanup signals for this visit." actions={<Link className="button button--quiet" to="/caretaker/visits">← Visit Debugger</Link>} />
@@ -137,18 +156,82 @@ function VisitDetail({ id }: { id: string }) {
               <div><dt>Visitor heartbeat</dt><dd>{formatDate(visit.visitorOwnerSeenAt)}</dd></div><div><dt>Host heartbeat</dt><dd>{formatDate(visit.hostSeenAt)}</dd></div>
               <div><dt>End reason</dt><dd>{sentenceCase(visit.endReason)}</dd></div><div><dt>Live pack ref</dt><dd>{shortId(visit.assetPackRefId)}</dd></div>
             </dl>
-            {!['ended', 'cancelled', 'failed'].includes(state) && <Button variant="danger" onClick={() => setConfirm(true)}><CircleX /> End stuck session</Button>}
+            <div className="row-actions">
+              {!['ended', 'cancelled', 'failed'].includes(state) && <Button variant="danger" onClick={() => setConfirm('end')}><CircleX /> End stuck session</Button>}
+              <Button
+                variant="secondary"
+                disabled={!visit.reconciliation?.eligible}
+                title={visit.reconciliation?.eligible
+                  ? 'End this conservatively stale live session and clear its live Pack reference.'
+                  : `Unavailable: ${sentenceCase(visit.reconciliation?.code)}`}
+                onClick={() => setConfirm('reconcile')}
+              >
+                <Wrench /> Trigger safe reconciliation
+              </Button>
+            </div>
+            {!visit.reconciliation?.eligible && (
+              <small className="muted">
+                Safe reconciliation refuses healthy and terminal sessions. A live session must have no activity for at least {visit.reconciliation?.staleAfterMinutes ?? 15} minutes.
+              </small>
+            )}
           </PaperCard>
           <PaperCard>
             <div className="section-heading"><div><p className="eyebrow">Lifecycle</p><h2>Diagnostic timeline</h2></div><ClockAlert /></div>
             <ol className="milestone-list">{timeline.map(([label, date]) => <li className={date ? 'is-reached' : ''} key={label}><span /><div><strong>{label}</strong><small>{date ? formatDate(date) : 'Not reached'}</small></div></li>)}</ol>
           </PaperCard>
+          <PaperCard>
+            <div className="section-heading"><div><p className="eyebrow">Named checks</p><h2>Visit diagnostics</h2></div><TriangleAlert /></div>
+            <div className="count-grid">
+              {diagnostics.map((diagnostic) => (
+                <div key={diagnostic.code}>
+                  <strong>{diagnostic.active ? 'Detected' : 'Clear'}</strong>
+                  <span>{diagnostic.label}</span>
+                </div>
+              ))}
+            </div>
+          </PaperCard>
         </div>
       )}
-      <ConfirmDialog open={confirm} title="End this session?" description="Use only for a genuinely invalid or stuck session. The reason becomes part of the immutable audit history." confirmLabel="End session" destructive reason={reason} reasonRequired onReasonChange={setReason} busy={mutation.isPending} onCancel={() => { setConfirm(false); setReason(''); }} onConfirm={() => mutation.mutate()} />
+      <ConfirmDialog
+        open={Boolean(confirm)}
+        title={confirm === 'reconcile' ? 'Trigger safe reconciliation?' : 'End this session?'}
+        description={confirm === 'reconcile'
+          ? 'The server will re-check staleness under a row lock, close the live session, clear its live Asset Pack reference, notify both participants, and write the reason to the immutable audit log.'
+          : 'Use only for a genuinely invalid or stuck session. The reason becomes part of the immutable audit history.'}
+        confirmLabel={confirm === 'reconcile' ? 'Trigger safe reconciliation' : 'End session'}
+        destructive
+        reason={reason}
+        reasonRequired
+        onReasonChange={setReason}
+        busy={mutation.isPending}
+        onCancel={closeConfirm}
+        onConfirm={() => confirm && mutation.mutate(confirm)}
+      />
       {mutation.isError && <p className="inline-error" role="alert">{mutation.error.message}</p>}
     </>
   );
+}
+
+export function visitTimeline(visit: AdminVisit): Array<[string, string | null | undefined]> {
+  return [
+    ['Invitation created', visit.createdAt],
+    ['Invitation accepted', visit.invitationAcceptedAt],
+    ['Asset authorized', visit.assetPackRefId ? visit.createdAt : null],
+    ['Visitor owner ready', visit.visitorOwnerReadyAt],
+    ['Host ready', visit.hostReadyAt],
+    ['Session ready', visit.readyAt],
+    ['Session active', visit.startedAt],
+    ['Session ending', visit.endingAt],
+    ['Session ended', visit.endedAt],
+    ['Cleanup completed', visit.endedAt && !visit.assetPackRefId ? visit.endedAt : null],
+  ];
+}
+
+export function visitDiagnostics(visit: AdminVisit): VisitDiagnostic[] {
+  return VISIT_DIAGNOSTIC_LABELS.map(([code, label]) => (
+    visit.diagnostics?.find((diagnostic) => diagnostic.code === code)
+    ?? { code, label, active: false }
+  ));
 }
 
 function isPossiblyStuck(visit: AdminVisit) {

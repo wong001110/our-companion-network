@@ -55,6 +55,9 @@ describeIntegration('Portal admin foundation PostgreSQL invariants', () => {
         "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       ${migration}
+      CREATE TYPE "UserAccountStatus" AS ENUM ('ACTIVE', 'SUSPENDED');
+      ALTER TABLE "User"
+      ADD COLUMN "accountStatus" "UserAccountStatus" NOT NULL DEFAULT 'ACTIVE';
       INSERT INTO "User" ("id", "uid", "email", "username") VALUES
         ('admin-a', 'OC-ADMINAAA', 'a@example.test', 'Admin A'),
         ('admin-b', 'OC-ADMINBBB', 'b@example.test', 'Admin B'),
@@ -110,10 +113,12 @@ describeIntegration('Portal admin foundation PostgreSQL invariants', () => {
       roles.demote({
         targetUid: 'OC-ADMINAAA',
         reason: 'Concurrent PostgreSQL invariant test A',
+        actorUserId: 'admin-a',
       }),
       roles.demote({
         targetUid: 'OC-ADMINBBB',
         reason: 'Concurrent PostgreSQL invariant test B',
+        actorUserId: 'admin-b',
       }),
     ]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);

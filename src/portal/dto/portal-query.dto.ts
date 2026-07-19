@@ -34,6 +34,11 @@ export class PortalListQueryDto extends SortedPagePaginationDto {
 
 export class FriendRequestQueryDto extends PagePaginationDto {
   @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+
+  @IsOptional()
   @IsIn(['incoming', 'outgoing'])
   direction: 'incoming' | 'outgoing' = 'incoming';
 

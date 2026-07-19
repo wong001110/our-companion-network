@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Ban, Copy, Heart, MailQuestion, Search, Send, UserRoundPlus } from 'lucide-react';
+import { Ban, Copy, Heart, MailQuestion, Search, Send, UserMinus, UserRoundPlus } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthProvider';
 import { api, jsonBody, type PageEnvelope } from '../lib/api';
 import { formatDate, sentenceCase } from '../lib/format';
@@ -50,17 +50,18 @@ export function FriendsPage() {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>('friends');
   const [page, setPage] = useState(1);
+  const [listSearch, setListSearch] = useState('');
   const [friendCode, setFriendCode] = useState('');
   const [lookup, setLookup] = useState<LookupResult | null>(null);
   const [lookupError, setLookupError] = useState('');
   const queryClient = useQueryClient();
   const endpoint = tab === 'friends'
-    ? '/api/portal/friends'
+    ? `/api/portal/friends?search=${encodeURIComponent(listSearch)}`
     : tab === 'blocked'
-      ? '/api/portal/blocks'
-      : `/api/portal/friend-requests?direction=${tab}&status=pending`;
+      ? `/api/portal/blocks?search=${encodeURIComponent(listSearch)}`
+      : `/api/portal/friend-requests?direction=${tab}&status=pending&search=${encodeURIComponent(listSearch)}`;
   const list = useQuery({
-    queryKey: ['friends', tab, page],
+    queryKey: ['friends', tab, page, listSearch],
     queryFn: () => api<PageEnvelope<Friend | FriendRequest | BlockedRow>>(
       `${endpoint}${endpoint.includes('?') ? '&' : '?'}page=${page}&limit=12`,
     ),
@@ -158,6 +159,20 @@ export function FriendsPage() {
           </button>
         ))}
       </div>
+      <div className="inline-form">
+        <label className="sr-only" htmlFor="friend-list-search">Search this friend list</label>
+        <input
+          id="friend-list-search"
+          value={listSearch}
+          maxLength={100}
+          placeholder={`Search ${tab}`}
+          onChange={(event) => {
+            setListSearch(event.target.value);
+            setPage(1);
+          }}
+        />
+        <Search aria-hidden="true" />
+      </div>
       {list.isLoading && <SkeletonGrid cards={4} />}
       {list.isError && <ErrorState error={list.error} onRetry={() => void list.refetch()} />}
       {list.data?.items.length === 0 && (
@@ -171,7 +186,7 @@ export function FriendsPage() {
             key={item.id}
             tab={tab}
             item={item}
-            onAction={(path, method) => mutate.mutate({ path, method })}
+            onAction={(path, method, body) => mutate.mutate({ path, method, body })}
           />
         ))}
       </div>
@@ -188,7 +203,7 @@ function FriendRow({
 }: {
   tab: Tab;
   item: Friend | FriendRequest | BlockedRow;
-  onAction(path: string, method?: string): void;
+  onAction(path: string, method?: string, body?: unknown): void;
 }) {
   const request = item as FriendRequest;
   const block = item as BlockedRow;
@@ -220,7 +235,17 @@ function FriendRow({
         <Button variant="quiet" onClick={() => onAction(`/api/blocks/${friend.id}`, 'DELETE')}>Unblock</Button>
       )}
       {tab === 'friends' && (
-        <small>Friends since {formatDate((item as Friend).createdAt, { dateStyle: 'medium' })}</small>
+        <>
+          <small>Friends since {formatDate((item as Friend).createdAt, { dateStyle: 'medium' })}</small>
+          <div className="row-actions">
+            <Button variant="quiet" onClick={() => onAction(`/api/friends/${friend.id}`, 'DELETE')}>
+              <UserMinus aria-hidden="true" /> Remove
+            </Button>
+            <Button variant="danger" onClick={() => onAction('/api/blocks', 'POST', { userId: friend.id })}>
+              <Ban aria-hidden="true" /> Block
+            </Button>
+          </div>
+        </>
       )}
     </PaperCard>
   );

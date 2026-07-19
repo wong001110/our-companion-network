@@ -148,6 +148,15 @@ export class AdminController {
     return this.admin.endVisitSession(admin.id, id, dto.reason);
   }
 
+  @Post('visit-sessions/:id/reconcile')
+  reconcileVisitSession(
+    @CurrentUser() admin: UserPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AdminReasonDto,
+  ) {
+    return this.admin.reconcileVisitSession(admin.id, id, dto.reason);
+  }
+
   @Get('system-health')
   systemHealth() {
     return this.admin.systemHealth();

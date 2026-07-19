@@ -34,9 +34,10 @@ export function AdminSystemPage() {
           <HealthCard icon={Server} label="API" value={query.data.api} />
           <HealthCard icon={Database} label="PostgreSQL" value={query.data.database} note={`Migration ${query.data.migrationVersion || 'unknown'}`} />
           <HealthCard icon={Database} label="R2 Storage" value={objectStatus(query.data.r2)} note={JSON.stringify(query.data.r2)} />
-          <HealthCard icon={Wifi} label="WebSocket" value="ok" note={`${query.data.websocket.connectionCount ?? 0} current connections`} />
+          <HealthCard icon={Wifi} label="WebSocket" value={String(query.data.websocket.status ?? 'unavailable')} note={`${query.data.websocket.connectionCount ?? 0} current connections`} />
           <PaperCard><p className="eyebrow">Version postcard</p><h2>Compatibility</h2><dl className="stacked-details"><div><dt>Server</dt><dd>{query.data.serverVersion}</dd></div><div><dt>Protocol</dt><dd>{query.data.protocolVersion}</dd></div><div><dt>Minimum client</dt><dd>{query.data.compatibleClientVersion}</dd></div></dl></PaperCard>
           <PaperCard><p className="eyebrow">Realtime snapshot</p><h2>Operational counters</h2><div className="count-grid">{Object.entries(query.data.websocket).map(([label, value]) => <div key={label}><strong>{String(value)}</strong><span>{sentenceCase(label)}</span></div>)}</div></PaperCard>
+          {query.data.realtime && <PaperCard><p className="eyebrow">Presence health</p><h2>Bounded signals</h2><div className="count-grid">{Object.entries(query.data.realtime.presence).map(([label, value]) => <div key={label}><strong>{value ?? '—'}</strong><span>{sentenceCase(label)}</span></div>)}</div></PaperCard>}
         </div>
       )}
     </>
@@ -57,8 +58,21 @@ export function AdminRealtimePage() {
       {query.data && (
         <>
           <div className="metric-grid">
-            {Object.entries(query.data.websocket).map(([label, value], index) => <PaperCard className="metric-card" key={label}><div className="metric-icon">{index % 2 ? <Activity /> : <Radio />}</div><span>{sentenceCase(label)}</span><strong>{String(value)}</strong><small>Operational, short-retention signal</small></PaperCard>)}
+            {realtimeMetrics(query.data).map(([label, value, note], index) => <PaperCard className="metric-card" key={label}><div className="metric-icon">{index % 2 ? <Activity /> : <Radio />}</div><span>{label}</span><strong>{value}</strong><small>{note}</small></PaperCard>)}
           </div>
+          <PaperCard>
+            <div className="section-heading"><div><p className="eyebrow">Bounded recent presence</p><h2>Last seen rows</h2></div><Radio /></div>
+            <div className="compact-list">
+              {query.data.realtime?.lastSeen.map((row) => (
+                <div key={row.userId}>
+                  <span><strong>{row.displayName || row.username}</strong><small>{row.uid} · Last seen {formatDate(row.lastSeenAt)}</small></span>
+                  <Stamp tone={row.status === 'online' ? 'good' : row.status === 'idle' ? 'warn' : 'neutral'}>{sentenceCase(row.status)}</Stamp>
+                </div>
+              ))}
+              {!query.data.realtime?.lastSeen.length && <p>No recent presence rows are available.</p>}
+            </div>
+            <small>Shows at most 50 recent rows. A stale signal is online or idle without an update for {query.data.realtime?.staleAfterMinutes ?? 15} minutes.</small>
+          </PaperCard>
           <PaperCard className="privacy-note"><Radio /><div><h2>Presence is ephemeral by design</h2><p>These counters are operational snapshots, not an unlimited history of a person’s activity.</p></div></PaperCard>
         </>
       )}
@@ -105,4 +119,20 @@ function HealthCard({ icon: Icon, label, value, note }: { icon: typeof Server; l
 function objectStatus(value: SystemHealth['r2']) {
   if (typeof value === 'string') return value;
   return value.uploadsEnabled ? 'ready' : 'unavailable';
+}
+
+function realtimeMetrics(health: SystemHealth): Array<[string, string, string]> {
+  const realtime = health.realtime;
+  const reconnectWindow = health.websocket.reconnectWindowMinutes ?? 15;
+  return [
+    ['Connections', String(health.websocket.connectionCount ?? 0), 'Current authenticated WebSocket connections'],
+    ['Connected users', String(health.websocket.connectedUsers ?? 0), 'Unique users with a live socket'],
+    ['Reconnects', String(health.websocket.reconnectCount ?? 0), `Reconnects in the last ${reconnectWindow} minutes`],
+    ['Online', String(realtime?.presence.online ?? '—'), 'Current persisted online rows'],
+    ['Idle', String(realtime?.presence.idle ?? '—'), 'Current persisted idle rows'],
+    ['Offline', String(realtime?.presence.offline ?? '—'), 'Current persisted offline rows'],
+    ['Stale presence', String(realtime?.presence.stale ?? '—'), `Online or idle beyond ${realtime?.staleAfterMinutes ?? 15} minutes`],
+    ['Active devices', String(realtime?.activeDeviceCount ?? '—'), 'Unrevoked, unexpired device sessions'],
+    ['Visit participants', String(realtime?.activeVisitParticipants ?? '—'), realtime?.activeVisitParticipantsCapped ? `Lower bound; ${realtime.activeVisitParticipantSampleLimit} active sessions inspected` : 'Unique participants in live visit states'],
+  ];
 }

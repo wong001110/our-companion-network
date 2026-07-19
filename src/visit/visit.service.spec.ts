@@ -39,7 +39,10 @@ describe('VisitService S4 lifecycle and privacy', () => {
       blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null) },
       visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue(created) },
-      user: { findUnique: jest.fn().mockResolvedValue({ activeNetworkCompanionId: companionId }) },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', activeNetworkCompanionId: companionId }),
+        count: jest.fn().mockResolvedValue(2),
+      },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, ownerUserId: owner, name: 'Ann', publicDescription: 'Public', publicTags: ['kind'], published: true, visibility: 'friends_only', activeAssetPackId: packId }) },
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest() }) },
     };
@@ -52,11 +55,35 @@ describe('VisitService S4 lifecycle and privacy', () => {
     expect(events.publishToUser).toHaveBeenCalledWith(owner, 'visit.invitation.created', { invitationId });
   });
 
+  it('does not create a Visit involving a deletion-pending participant', async () => {
+    const tx = {
+      $queryRaw: jest.fn(),
+      friendship: { findUnique: jest.fn().mockResolvedValue({}) },
+      blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      user: { count: jest.fn().mockResolvedValue(1) },
+      visitSession: { findFirst: jest.fn() },
+      visitInvitation: { create: jest.fn() },
+    };
+    const { instance } = service({
+      $transaction: jest.fn((operation) => operation(tx)),
+    });
+
+    await expect(instance.createInvitation(owner, host)).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'VISIT_INVITATION_NOT_AVAILABLE',
+      }),
+    });
+    expect(tx.visitInvitation.create).not.toHaveBeenCalled();
+  });
+
   it('rejects invitation creation when the immutable snapshot lacks a required Visual Visit animation', async () => {
     const tx = {
       $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null) }, visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
-      user: { findUnique: jest.fn().mockResolvedValue({ activeNetworkCompanionId: companionId }) },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', activeNetworkCompanionId: companionId }),
+        count: jest.fn().mockResolvedValue(2),
+      },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, ownerUserId: owner, name: 'Ann', publicDescription: 'Public', publicTags: ['kind'], published: true, visibility: 'friends_only', activeAssetPackId: packId }) },
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest('Walk_Left') }) },
     };
@@ -67,7 +94,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
 
   it('rechecks Visual Visit compatibility when the host accepts an invitation', async () => {
     const tx = {
-      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(0), create: jest.fn() },
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, published: true, visibility: 'friends_only' }) },
@@ -80,7 +107,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
 
   it('rejects a third occupied host slot before accepting the invitation', async () => {
     const tx = {
-      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(2), create: jest.fn() },
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
     };
@@ -91,7 +118,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
 
   it('rejects an incoming acceptance while the host is away as a Visitor owner', async () => {
     const tx = {
-      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
+      $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) },
       visitSession: { findFirst: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'host-outgoing' }), count: jest.fn().mockResolvedValue(0), create: jest.fn() },
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
     };
@@ -114,7 +141,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
   });
 
   it('requires a ready session before the host can start it', async () => {
-    const tx = { $queryRaw: jest.fn(), visitSession: { findUnique: jest.fn().mockResolvedValue(session('preparing')) }, friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) } };
+    const tx = { $queryRaw: jest.fn(), visitSession: { findUnique: jest.fn().mockResolvedValue(session('preparing')) }, friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) } };
     const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
     await expect(instance.startSession(host, sessionId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'VISIT_SESSION_NOT_READY' }) });
   });

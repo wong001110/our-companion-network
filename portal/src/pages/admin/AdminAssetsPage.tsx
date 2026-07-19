@@ -41,11 +41,12 @@ interface Pack {
   storageInspection?: {
     available: boolean;
     manifestMismatch: boolean;
-    manifestObjectExists: boolean;
-    missingObjects: number;
-    orphanObjects: number;
-    shaMismatches: number;
-    metadataMismatches: number;
+    manifestObjectExists: boolean | null;
+    missingObjects: string[] | null;
+    orphanObjects: string[] | null;
+    shaMismatches: string[] | null;
+    metadataMismatches: string[] | null;
+    fileInspectionTruncated?: boolean;
   };
 }
 
@@ -108,6 +109,20 @@ function AssetDetail({ id }: { id: string }) {
   const missing = pack?.files?.filter((file) => !file.uploaded).length ?? 0;
   const unverified = pack?.files?.filter((file) => !file.verifiedAt).length ?? 0;
   const inspection = pack?.storageInspection;
+  const missingObjects = inspectionCount(inspection?.missingObjects);
+  const orphanObjects = inspectionCount(inspection?.orphanObjects);
+  const shaMismatches = inspectionCount(inspection?.shaMismatches);
+  const metadataMismatches = inspectionCount(inspection?.metadataMismatches);
+  const inspectionClean = Boolean(
+    inspection?.available
+    && !inspection.manifestMismatch
+    && inspection.manifestObjectExists
+    && missingObjects === 0
+    && orphanObjects === 0
+    && shaMismatches === 0
+    && metadataMismatches === 0
+    && !inspection.fileInspectionTruncated,
+  );
   return (
     <>
       <PageHeader eyebrow="Caretaker Desk · Storage inspector" title="Asset Pack details" description="Manifest, animation files, verification state, and active visit references for one bounded pack." actions={<Link className="button button--quiet" to="/caretaker/assets">← Asset Storage</Link>} />
@@ -128,18 +143,20 @@ function AssetDetail({ id }: { id: string }) {
           </PaperCard>
           {inspection && (
             <PaperCard>
-              <div className="section-heading"><div><p className="eyebrow">R2 reconciliation</p><h2>Object integrity</h2></div><Stamp tone={inspection.available && !inspection.manifestMismatch && !inspection.missingObjects && !inspection.shaMismatches ? 'good' : 'warn'}>{inspection.available ? 'Inspected' : 'Unavailable'}</Stamp></div>
+              <div className="section-heading"><div><p className="eyebrow">R2 reconciliation</p><h2>Object integrity</h2></div><Stamp tone={inspectionClean ? 'good' : 'warn'}>{inspection.available ? inspectionClean ? 'Verified' : 'Needs attention' : 'Unavailable'}</Stamp></div>
               <div className="count-grid">
-                <div><strong>{inspection.manifestObjectExists ? 'Yes' : 'No'}</strong><span>Manifest object</span></div>
-                <div><strong>{inspection.missingObjects}</strong><span>Missing objects</span></div>
-                <div><strong>{inspection.orphanObjects}</strong><span>Orphan objects</span></div>
-                <div><strong>{inspection.shaMismatches}</strong><span>SHA mismatches</span></div>
-                <div><strong>{inspection.metadataMismatches}</strong><span>Metadata mismatch</span></div>
+                <div><strong>{inspection.manifestObjectExists == null ? '—' : inspection.manifestObjectExists ? 'Yes' : 'No'}</strong><span>Manifest object</span></div>
+                <div><strong>{displayInspectionCount(inspection.missingObjects)}</strong><span>Missing objects</span></div>
+                <div><strong>{displayInspectionCount(inspection.orphanObjects)}</strong><span>Orphan objects</span></div>
+                <div><strong>{displayInspectionCount(inspection.shaMismatches)}</strong><span>SHA mismatches</span></div>
+                <div><strong>{displayInspectionCount(inspection.metadataMismatches)}</strong><span>Metadata mismatch</span></div>
                 <div><strong>{inspection.manifestMismatch ? 'Yes' : 'No'}</strong><span>Manifest mismatch</span></div>
               </div>
+              {inspection.fileInspectionTruncated && <p className="failure-note">The database contains more than the 1,000-file Asset Pack contract permits. Object reconciliation is intentionally incomplete until the invalid pack is repaired.</p>}
             </PaperCard>
           )}
-          {(missing > 0 || unverified > 0 || (inspection?.missingObjects ?? 0) > 0 || (inspection?.shaMismatches ?? 0) > 0) && <div className="warning-banner"><TriangleAlert />{missing} missing upload record(s), {unverified} unverified file(s), {inspection?.missingObjects ?? 0} absent R2 object(s), {inspection?.shaMismatches ?? 0} SHA mismatch(es).</div>}
+          {pack.failureCode === 'ASSET_CLEANUP_FAILED' && <div className="warning-banner"><TriangleAlert />Failed cleanup: R2 deletion or verification did not complete. The pack remains claimed for safe reconciliation and its database record was preserved.</div>}
+          {(missing > 0 || unverified > 0 || missingObjects > 0 || orphanObjects > 0 || shaMismatches > 0 || metadataMismatches > 0 || Boolean(inspection?.manifestMismatch) || Boolean(inspection?.fileInspectionTruncated)) && <div className="warning-banner"><TriangleAlert />{missing} missing upload record(s), {unverified} unverified file(s), {missingObjects} absent R2 object(s), {orphanObjects} orphan object(s), {shaMismatches} SHA mismatch(es), {metadataMismatches} metadata mismatch(es).</div>}
           <PaperCard>
             <p className="eyebrow">Declared manifest</p>
             <h2>Manifest</h2>
@@ -158,4 +175,12 @@ function AssetDetail({ id }: { id: string }) {
       )}
     </>
   );
+}
+
+export function inspectionCount(value: string[] | null | undefined): number {
+  return value?.length ?? 0;
+}
+
+function displayInspectionCount(value: string[] | null | undefined): number | string {
+  return value === null || value === undefined ? '—' : value.length;
 }

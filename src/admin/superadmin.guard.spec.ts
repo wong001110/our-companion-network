@@ -1,4 +1,4 @@
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { SuperadminGuard } from './superadmin.guard';
 
 function contextFor(user?: { id?: string; role?: string }) {

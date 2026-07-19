@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { pipeline } from 'node:stream/promises';
 import { CurrentUser, UserPayload } from '../common/decorators/current-user.decorator';
 import { PortalRateLimitGuard } from '../common/guards/portal-rate-limit.guard';
 import { UpdateProfileDto } from '../community/dto/update-profile.dto';
@@ -168,8 +169,21 @@ export class PortalController {
   }
 
   @Get('data-export')
-  dataExport(@CurrentUser() user: UserPayload) {
-    return this.portal.dataExport(user.id);
+  async dataExport(
+    @CurrentUser() user: UserPayload,
+    @Res() response: Response,
+  ) {
+    const stream = await this.portal.dataExport(user.id);
+    const day = new Date().toISOString().slice(0, 10);
+    response.status(200);
+    response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="our-companion-network-export-${day}.json"`,
+    );
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    await pipeline(stream, response);
   }
 
   @Delete('data/notifications')

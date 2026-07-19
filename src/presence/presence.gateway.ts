@@ -13,6 +13,9 @@ import { PresenceService } from './presence.service';
 import { SocketAuthService } from '../common/socket-auth.service';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
 
+const RECONNECT_WINDOW_MS = 15 * 60_000;
+const MAX_RECONNECT_EVENTS = 10_000;
+
 @WebSocketGateway({
   cors: { origin: process.env.CORS_ORIGIN || 'http://localhost:3000', credentials: true },
 })
@@ -24,6 +27,7 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   private readonly offlineTimers = new Map<string, NodeJS.Timeout>();
   private readonly activityTimers = new Map<string, NodeJS.Timeout>();
   private readonly socketActivity = new Map<string, number>();
+  private readonly reconnectEvents: number[] = [];
 
   constructor(
     private readonly presenceService: PresenceService,
@@ -47,6 +51,7 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     if (timer) {
       clearTimeout(timer);
       this.offlineTimers.delete(userId);
+      this.recordReconnect();
     }
     const sockets = this.userSockets.get(userId) ?? new Set<string>();
     sockets.add(client.id);
@@ -97,11 +102,14 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   getOperationalSnapshot() {
+    this.pruneReconnectEvents();
     return {
       status: this.server ? 'ok' : 'unavailable',
       connectionCount: [...this.userSockets.values()]
         .reduce((total, sockets) => total + sockets.size, 0),
       connectedUsers: this.userSockets.size,
+      reconnectCount: this.reconnectEvents.length,
+      reconnectWindowMinutes: RECONNECT_WINDOW_MS / 60_000,
     };
   }
 
@@ -146,5 +154,27 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       : status === 'idle' ? await this.presenceService.setIdle(userId) : await this.presenceService.setOffline(userId);
     const payload = { userId, status: presence.status, updatedAt: presence.updatedAt.toISOString() };
     for (const friendId of await this.presenceService.getFriendIds(userId)) this.events.publishToUser(friendId, 'presence.updated', payload);
+  }
+
+  private recordReconnect(): void {
+    const now = Date.now();
+    this.pruneReconnectEvents(now);
+    this.reconnectEvents.push(now);
+    if (this.reconnectEvents.length > MAX_RECONNECT_EVENTS) {
+      this.reconnectEvents.splice(
+        0,
+        this.reconnectEvents.length - MAX_RECONNECT_EVENTS,
+      );
+    }
+  }
+
+  private pruneReconnectEvents(now = Date.now()): void {
+    const cutoff = now - RECONNECT_WINDOW_MS;
+    while (
+      this.reconnectEvents.length > 0
+      && this.reconnectEvents[0] < cutoff
+    ) {
+      this.reconnectEvents.shift();
+    }
   }
 }

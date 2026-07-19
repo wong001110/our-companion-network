@@ -7,7 +7,6 @@ import { VisitConfigService } from '../common/visit-config.service';
 import { supportsVisualVisit } from '../companion/asset-manifest';
 
 const PENDING = 'pending';
-const INVITATION_TERMINAL = ['accepted', 'declined', 'cancelled', 'expired'];
 const SESSION_LIVE = ['preparing', 'ready', 'active', 'ending'];
 const SESSION_HEARTBEAT = ['preparing', 'ready', 'active'];
 const SESSION_TERMINAL = ['ended', 'cancelled', 'failed'];
@@ -279,8 +278,8 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async loadCurrentSnapshotInTransaction(tx: Prisma.TransactionClient, ownerId: string): Promise<any | undefined> {
-    const owner = await tx.user.findUnique({ where: { id: ownerId }, select: { activeNetworkCompanionId: true } });
-    if (!owner?.activeNetworkCompanionId) return undefined;
+    const owner = await tx.user.findUnique({ where: { id: ownerId }, select: { accountStatus: true, activeNetworkCompanionId: true } });
+    if (owner?.accountStatus !== 'ACTIVE' || !owner.activeNetworkCompanionId) return undefined;
     await this.lockCompanion(tx, owner.activeNetworkCompanionId);
     const companion = await tx.networkCompanion.findUnique({ where: { id: owner.activeNetworkCompanionId }, select: { id: true, ownerUserId: true, name: true, publicDescription: true, publicTags: true, visibility: true, published: true, activeAssetPackId: true } });
     if (!companion || companion.ownerUserId !== ownerId || !companion.published || companion.visibility !== 'friends_only' || !companion.activeAssetPackId) return undefined;
@@ -291,12 +290,21 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async assertEligible(tx: any, first: string, second: string) {
-    const [forward, reverse, blocked] = await Promise.all([
+    const [forward, reverse, blocked, activeParticipants] = await Promise.all([
       tx.friendship.findUnique({ where: { userId_friendId: { userId: first, friendId: second } } }),
       tx.friendship.findUnique({ where: { userId_friendId: { userId: second, friendId: first } } }),
       tx.blockedUser.findFirst({ where: { OR: [{ blockerId: first, blockedId: second }, { blockerId: second, blockedId: first }] } }),
+      tx.user.count({
+        where: {
+          id: { in: [first, second] },
+          accountStatus: 'ACTIVE',
+          deletionRequestedAt: null,
+        },
+      }),
     ]);
-    if (!forward || !reverse || blocked) this.notAvailable();
+    if (!forward || !reverse || blocked || activeParticipants !== 2) {
+      this.notAvailable();
+    }
   }
 
   private async assertVisitorOwnerAvailable(tx: any, visitorOwnerUserId: string) {
