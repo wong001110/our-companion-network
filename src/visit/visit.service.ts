@@ -59,6 +59,13 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
 
   async acceptInvitation(hostUserId: string, invitationId: string) {
     const result = await this.prisma.$transaction(async tx => {
+      const route = await tx.visitInvitation.findUnique({
+        where: { id: invitationId },
+        select: { visitorOwnerUserId: true, hostUserId: true },
+      });
+      if (!route) throw new NotFoundException({ code: 'VISIT_INVITATION_NOT_FOUND', message: 'Visit invitation was not found' });
+      if (route.hostUserId !== hostUserId) throw new ForbiddenException({ code: 'VISIT_INVITATION_NOT_HOST', message: 'Visit invitation is not available' });
+      await this.lockParticipants(tx, route.visitorOwnerUserId, route.hostUserId);
       await tx.$queryRaw`SELECT "id" FROM "VisitInvitation" WHERE "id" = ${invitationId} FOR UPDATE`;
       const invitation = await tx.visitInvitation.findUnique({ where: { id: invitationId }, select: { ...INVITATION_SELECT, session: { select: SESSION_SELECT } } });
       if (!invitation) throw new NotFoundException({ code: 'VISIT_INVITATION_NOT_FOUND', message: 'Visit invitation was not found' });
@@ -68,7 +75,6 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       if (invitation.expiresAt <= new Date()) {
         return { invitation: await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'expired', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT }), expired: true };
       }
-      await this.lockParticipants(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
       await this.assertEligible(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
       await this.assertVisitorOwnerAvailable(tx, invitation.visitorOwnerUserId);
       await this.assertHostCapacity(tx, invitation.hostUserId);

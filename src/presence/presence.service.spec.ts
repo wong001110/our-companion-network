@@ -21,5 +21,29 @@ describe('PresenceService recovery and REST contract', () => {
       { userId: 'friend-a', status: 'idle', updatedAt: updatedAt.toISOString() },
       { userId: 'friend-b', status: 'offline', updatedAt: null },
     ]);
+    expect((service as any).prisma.friendship.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-a',
+        user: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+        friend: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+      },
+      select: { friendId: true },
+    });
+  });
+
+  it('only returns active, non-deleting users as presence recipients', async () => {
+    const findMany = jest.fn().mockResolvedValue([{ friendId: 'friend-a' }]);
+    const service = new PresenceService({
+      friendship: { findMany },
+    } as never);
+
+    await expect(service.getFriendIds('user-a')).resolves.toEqual(['friend-a']);
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-a',
+        friend: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+      },
+      select: { friendId: true },
+    });
   });
 });

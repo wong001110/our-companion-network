@@ -29,7 +29,7 @@ describe('Companion Asset Pack cleanup verification', () => {
       .toBeLessThan(deleteRow.mock.invocationCallOrder[0]);
   });
 
-  it('keeps the deleting row when post-delete R2 prefix verification fails', async () => {
+  it('keeps and marks the deleting row when prefix verification fails without aborting cleanup', async () => {
     const deleteRow = jest.fn();
     const prisma = {
       companionAssetPack: {
@@ -56,8 +56,7 @@ describe('Companion Asset Pack cleanup verification', () => {
       {} as never,
     );
 
-    await expect(service.cleanupSupersededPacks())
-      .rejects.toThrow('ASSET_STORAGE_DELETE_INCOMPLETE');
+    await expect(service.cleanupSupersededPacks()).resolves.toBe(0);
     expect(storage.deleteObjects).toHaveBeenCalled();
     expect(storage.assertObjectPrefixDeleted)
       .toHaveBeenCalledWith('packs/owner/pack-1');

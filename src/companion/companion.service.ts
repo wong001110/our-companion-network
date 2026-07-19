@@ -10,6 +10,7 @@ import { VisitService } from '../visit/visit.service';
 
 const PUBLIC_SELECT = { id: true, ownerUserId: true, name: true, publicDescription: true, publicTags: true, visibility: true, published: true, activeAssetPackId: true, createdAt: true, updatedAt: true, publishedAt: true } as const;
 const PACK_SELECT = { id: true, companionId: true, manifestHash: true, schemaVersion: true, status: true, totalFiles: true, totalBytes: true, failureCode: true, createdAt: true, updatedAt: true, completedAt: true, activatedAt: true, supersededAt: true } as const;
+const UPLOAD_URL_EXPIRY_SKEW_MS = 5_000;
 export interface CompleteAssetPackResult { assetPack: Record<string, unknown>; companion: Record<string, unknown>; }
 
 @Injectable()
@@ -245,7 +246,6 @@ export class CompanionService {
       const manifest = this.manifestFromPack(started);
       const validated = validateManifest(manifest, started.manifestHash, this.storage.limits);
       await this.storage.putManifest(`${started.objectPrefix}/manifest.json`, validated.canonicalJson);
-      await this.storage.deleteObjectPrefix(`${started.objectPrefix}/staging`);
       const completedAt = new Date();
       const result = await this.withActivePackUniqueRetry(() => this.prisma.$transaction(tx => this.activateVerifiedPackInTransaction(tx, {
         companionId: started.companionId,
@@ -284,6 +284,7 @@ export class CompanionService {
     const pack = await this.requireOwnedPack(userId, assetPackId, true);
     if (!['draft', 'failed', 'abandoned'].includes(pack.status)) throw new ConflictException({ code: 'ASSET_PACK_NOT_UPLOADABLE', message: 'This Asset Pack cannot be deleted' });
     this.requireStorage();
+    this.assertUploadUrlsExpired(pack.lastUploadUrlIssuedAt);
     const claimed = await this.prisma.companionAssetPack.updateMany({
       where: { id: assetPackId, status: pack.status, companion: { ownerUserId: userId } },
       data: { status: 'deleting', failureCode: null },
@@ -327,28 +328,103 @@ export class CompanionService {
   async abandonExpiredUploads(limit = 100) {
     const before = new Date(Date.now() - this.storage.limits.uploadSessionTtlHours * 3_600_000);
     const expired = { OR: [{ status: 'uploading', createdAt: { lt: before } }, { status: 'verifying', updatedAt: { lt: before } }] };
-    const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { OR: [expired, { status: 'abandoning' }] }, include: { files: { select: { id: true, objectKey: true } } } });
+    const uploadUrlsExpired = this.uploadUrlsExpiredWhere();
+    const packs = await this.prisma.companionAssetPack.findMany({
+      take: limit,
+      where: { AND: [{ OR: [expired, { status: 'abandoning' }] }, uploadUrlsExpired] },
+      include: { files: { select: { id: true, objectKey: true } } },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+    });
     let abandoned = 0;
     for (const pack of packs) {
       if (!this.storage.capability.uploadsEnabled) break;
       if (pack.status !== 'abandoning') {
-        const claimed = await this.prisma.companionAssetPack.updateMany({ where: { id: pack.id, ...expired }, data: { status: 'abandoning', failureCode: null } });
+        const claimed = await this.prisma.companionAssetPack.updateMany({
+          where: { id: pack.id, AND: [expired, uploadUrlsExpired] },
+          data: { status: 'abandoning', failureCode: null },
+        });
         if (claimed.count !== 1) continue;
       }
       try {
         await this.storage.deleteObjects(this.objectKeysForDeletion(pack.objectPrefix, pack.files));
         await this.storage.assertObjectPrefixDeleted(pack.objectPrefix);
-      } catch (error) {
+      } catch {
         await this.prisma.companionAssetPack.updateMany({
           where: { id: pack.id, status: 'abandoning' },
           data: { failureCode: 'ASSET_CLEANUP_FAILED' },
         }).catch(() => undefined);
-        throw error;
+        await this.refreshStorageAfterCleanupFailure();
+        continue;
       }
       await this.prisma.companionAssetPack.update({ where: { id: pack.id }, data: { status: 'abandoned' } });
       abandoned++;
     }
     return abandoned;
+  }
+
+  async cleanupActivePackStaging(limit = 100) {
+    const now = new Date();
+    const cleanupBefore = this.activeStagingCleanupBefore(now);
+    // A crashed worker can leave a running claim. One presigned-URL interval
+    // is a conservative lease before another worker retries its idempotent delete.
+    const staleClaimBefore = this.uploadUrlExpiredBefore(now);
+    const eligibleClaim = {
+      OR: [
+        { failureCode: null },
+        { failureCode: 'ASSET_STAGING_CLEANUP_RETRYABLE' },
+        {
+          failureCode: 'ASSET_STAGING_CLEANUP_RUNNING',
+          updatedAt: { lt: staleClaimBefore },
+        },
+      ],
+    };
+    const cleanupFence = {
+      status: 'active',
+      stagingCleanedAt: null,
+      activatedAt: { lt: cleanupBefore },
+      AND: [this.uploadUrlsExpiredWhere(now), eligibleClaim],
+    };
+    const packs = await this.prisma.companionAssetPack.findMany({
+      take: limit,
+      where: cleanupFence,
+      select: { id: true, objectPrefix: true },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+    });
+    let cleaned = 0;
+    for (const pack of packs) {
+      if (!this.storage.capability.uploadsEnabled) break;
+      const claimed = await this.prisma.companionAssetPack.updateMany({
+        where: { id: pack.id, ...cleanupFence },
+        data: { failureCode: 'ASSET_STAGING_CLEANUP_RUNNING' },
+      });
+      if (claimed.count !== 1) continue;
+      try {
+        await this.storage.deleteObjectPrefix(`${pack.objectPrefix}/staging`);
+      } catch {
+        await this.prisma.companionAssetPack.updateMany({
+          where: {
+            id: pack.id,
+            status: 'active',
+            stagingCleanedAt: null,
+            failureCode: 'ASSET_STAGING_CLEANUP_RUNNING',
+          },
+          data: { failureCode: 'ASSET_STAGING_CLEANUP_RETRYABLE' },
+        }).catch(() => undefined);
+        await this.refreshStorageAfterCleanupFailure();
+        continue;
+      }
+      const completed = await this.prisma.companionAssetPack.updateMany({
+        where: {
+          id: pack.id,
+          status: 'active',
+          stagingCleanedAt: null,
+          failureCode: 'ASSET_STAGING_CLEANUP_RUNNING',
+        },
+        data: { stagingCleanedAt: new Date(), failureCode: null },
+      });
+      if (completed.count === 1) cleaned++;
+    }
+    return cleaned;
   }
 
   async cleanupSupersededPacks(limit = 100) {
@@ -357,23 +433,41 @@ export class CompanionService {
       visitInvitationRefs: { none: { status: 'pending', assetPackRefId: { not: null } } },
       visitSessionRefs: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] }, assetPackRefId: { not: null } } },
     };
-    const packs = await this.prisma.companionAssetPack.findMany({ take: limit, where: { OR: [{ status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, { status: 'deleting' }] }, include: { files: { select: { id: true, objectKey: true } } } });
+    const uploadUrlsExpired = this.uploadUrlsExpiredWhere();
+    const packs = await this.prisma.companionAssetPack.findMany({
+      take: limit,
+      where: {
+        AND: [
+          { OR: [{ status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, { status: 'deleting' }] },
+          uploadUrlsExpired,
+        ],
+      },
+      include: { files: { select: { id: true, objectKey: true } } },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+    });
     let removed = 0;
     for (const pack of packs) {
       if (!this.storage.capability.uploadsEnabled) break;
       if (pack.status !== 'deleting') {
-        const claimed = await this.prisma.companionAssetPack.updateMany({ where: { id: pack.id, status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, data: { status: 'deleting', failureCode: null } });
+        const claimed = await this.prisma.companionAssetPack.updateMany({
+          where: {
+            id: pack.id,
+            AND: [{ status: 'superseded', supersededAt: { lt: before }, ...noLiveVisit }, uploadUrlsExpired],
+          },
+          data: { status: 'deleting', failureCode: null },
+        });
         if (claimed.count !== 1) continue;
       }
       try {
         await this.storage.deleteObjects(this.objectKeysForDeletion(pack.objectPrefix, pack.files));
         await this.storage.assertObjectPrefixDeleted(pack.objectPrefix);
-      } catch (error) {
+      } catch {
         await this.prisma.companionAssetPack.updateMany({
           where: { id: pack.id, status: 'deleting' },
           data: { failureCode: 'ASSET_CLEANUP_FAILED' },
         }).catch(() => undefined);
-        throw error;
+        await this.refreshStorageAfterCleanupFailure();
+        continue;
       }
       await this.prisma.companionAssetPack.delete({ where: { id: pack.id } });
       removed++;
@@ -531,6 +625,51 @@ export class CompanionService {
   private assertUploadable(pack: { status: string; createdAt: Date }) {
     this.assertUploadSessionCurrent(pack);
     if (pack.status !== 'uploading') throw new ConflictException({ code: 'ASSET_PACK_NOT_UPLOADABLE', message: 'Asset Pack cannot accept uploads' });
+  }
+  private assertUploadUrlsExpired(lastIssuedAt?: Date | null) {
+    if (!lastIssuedAt) return;
+    const expiresAt = lastIssuedAt.getTime()
+      + (this.storage.limits.uploadUrlTtlSeconds ?? 900) * 1_000
+      + UPLOAD_URL_EXPIRY_SKEW_MS;
+    if (Date.now() < expiresAt) {
+      throw new ConflictException({
+        code: 'ASSET_UPLOAD_URLS_ACTIVE',
+        message: 'Asset Pack cleanup can begin after issued upload URLs expire',
+      });
+    }
+  }
+  private uploadUrlExpiredBefore(now = new Date()) {
+    return new Date(
+      now.getTime()
+      - (this.storage.limits.uploadUrlTtlSeconds ?? 900) * 1_000
+      - UPLOAD_URL_EXPIRY_SKEW_MS,
+    );
+  }
+  private activeStagingCleanupBefore(now = new Date()) {
+    const uploadUrlTtlMs = (this.storage.limits.uploadUrlTtlSeconds ?? 900) * 1_000;
+    const uploadSessionTtlMs = (this.storage.limits.uploadSessionTtlHours ?? 24)
+      * 3_600_000;
+    return new Date(
+      now.getTime()
+      - Math.max(uploadUrlTtlMs, uploadSessionTtlMs)
+      - UPLOAD_URL_EXPIRY_SKEW_MS,
+    );
+  }
+  private uploadUrlsExpiredWhere(now = new Date()) {
+    const expiredBefore = this.uploadUrlExpiredBefore(now);
+    return {
+      OR: [
+        { lastUploadUrlIssuedAt: null },
+        { lastUploadUrlIssuedAt: { lt: expiredBefore } },
+      ],
+    };
+  }
+  private async refreshStorageAfterCleanupFailure() {
+    try {
+      await this.storage.refreshCapability();
+    } catch {
+      // The next scheduled pass will retry capability recovery.
+    }
   }
   private assertUploadSessionCurrent(pack: { createdAt: Date }) { if (Date.now() - pack.createdAt.getTime() > this.storage.limits.uploadSessionTtlHours * 3_600_000) throw new ConflictException({ code: 'ASSET_UPLOAD_SESSION_EXPIRED', message: 'Asset Pack upload session has expired' }); }
   private requireStorage() { if (!this.storage.capability.uploadsEnabled) throw new ServiceUnavailableException({ code: 'ASSET_STORAGE_UNAVAILABLE', message: 'Asset storage is currently unavailable' }); }

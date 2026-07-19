@@ -56,13 +56,15 @@ export class NotificationGateway {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { notificationId: string },
   ) {
-    const userId = client.data.userId;
+    const userId = await this.presenceGateway.validateClientSession(client);
+    if (!userId) return;
     return this.notificationService.markAsRead(userId, data.notificationId);
   }
 
   @SubscribeMessage('notification:mark_all_read')
   async handleMarkAllRead(@ConnectedSocket() client: Socket) {
-    const userId = client.data.userId;
+    const userId = await this.presenceGateway.validateClientSession(client);
+    if (!userId) return;
     return this.notificationService.markAllAsRead(userId);
   }
 }

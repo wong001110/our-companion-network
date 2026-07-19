@@ -6,6 +6,7 @@ import { IdentityController } from './identity.controller';
 import { IdentityService } from './identity.service';
 import { JwtStrategy } from '../common/strategies/jwt.strategy';
 import { AuthRateLimitGuard } from '../common/guards/auth-rate-limit.guard';
+import { PresenceModule } from '../presence/presence.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AuthRateLimitGuard } from '../common/guards/auth-rate-limit.guard';
       }),
       inject: [ConfigService],
     }),
+    PresenceModule,
   ],
   controllers: [IdentityController],
   providers: [IdentityService, JwtStrategy, AuthRateLimitGuard],

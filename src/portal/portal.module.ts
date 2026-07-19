@@ -9,6 +9,7 @@ import { PortalService } from './portal.service';
 import { AdminModule } from '../admin/admin.module';
 import { StorageModule } from '../storage/storage.module';
 import { AccountDeletionCleanupService } from './account-deletion-cleanup.service';
+import { PresenceModule } from '../presence/presence.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { AccountDeletionCleanupService } from './account-deletion-cleanup.servic
     CompanionModule,
     AdminModule,
     StorageModule,
+    PresenceModule,
   ],
   controllers: [BrowserAuthController, PortalController],
   providers: [

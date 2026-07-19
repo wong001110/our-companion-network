@@ -134,6 +134,58 @@ describe('VisitService S4 lifecycle and privacy', () => {
     await expect(instance.acceptInvitation(host, invitationId)).resolves.toMatchObject({ invitation: { status: 'accepted' }, session: { id: sessionId, state: 'preparing' } });
   });
 
+  it('locks participant users before locking the invitation during acceptance', async () => {
+    const existingSession = session('preparing');
+    const calls: string[] = [];
+    const tx = {
+      $queryRaw: jest.fn((query: TemplateStringsArray) => {
+        calls.push(query.join(''));
+      }),
+      visitInvitation: {
+        findUnique: jest.fn()
+          .mockImplementationOnce(async () => {
+            calls.push('route lookup');
+            return { visitorOwnerUserId: owner, hostUserId: host };
+          })
+          .mockImplementationOnce(async () => {
+            calls.push('authoritative invitation lookup');
+            return { ...invitation('accepted'), session: existingSession };
+          }),
+      },
+    };
+    const { instance } = service({
+      $transaction: jest.fn((operation) => operation(tx)),
+    });
+
+    await instance.acceptInvitation(host, invitationId);
+
+    expect(calls).toEqual([
+      'route lookup',
+      'SELECT "id" FROM "User" WHERE "id" IN (, ) ORDER BY "id" FOR UPDATE',
+      'SELECT "id" FROM "VisitInvitation" WHERE "id" =  FOR UPDATE',
+      'authoritative invitation lookup',
+    ]);
+  });
+
+  it('rejects a non-host before acquiring participant locks', async () => {
+    const tx = {
+      $queryRaw: jest.fn(),
+      visitInvitation: {
+        findUnique: jest.fn().mockResolvedValue({
+          visitorOwnerUserId: owner,
+          hostUserId: host,
+        }),
+      },
+    };
+    const { instance } = service({
+      $transaction: jest.fn((operation) => operation(tx)),
+    });
+
+    await expect(instance.acceptInvitation(owner, invitationId))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it('does not permit a non-host to start a session', async () => {
     const tx = { $queryRaw: jest.fn(), visitSession: { findUnique: jest.fn().mockResolvedValue(session('ready')) } };
     const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });

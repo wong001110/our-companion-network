@@ -352,6 +352,9 @@ export class AdminApiService {
       }, tx);
       return updated;
     });
+    if (status === UserAccountStatus.SUSPENDED) {
+      await this.presence.disconnectUser?.(userId);
+    }
     return user;
   }
 
@@ -362,7 +365,7 @@ export class AdminApiService {
     reason: string,
   ) {
     this.requireReason(reason);
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const session = await tx.deviceSession.findFirst({
         where: { id: sessionId, userId },
         select: { id: true, deviceId: true, revokedAt: true },
@@ -380,8 +383,10 @@ export class AdminApiService {
         reason,
         metadata: { userId },
       }, tx);
-      return { revoked: true };
+      return { revoked: true, deviceId: session.deviceId };
     });
+    await this.presence.disconnectDevice?.(userId, result.deviceId);
+    return { revoked: true };
   }
 
   async listCompanions(query: AdminListQueryDto) {

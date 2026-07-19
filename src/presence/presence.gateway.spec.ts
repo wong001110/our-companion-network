@@ -11,11 +11,31 @@ function createGateway(values: Record<string, string> = {}) {
   };
   const config = { get: jest.fn((key: string, fallback: string) => values[key] ?? (key === 'PRESENCE_IDLE_SECONDS' ? '10' : fallback)) };
   const events = { attach: jest.fn(), publishToUser: jest.fn() };
-  return { gateway: new PresenceGateway(presence as never, {} as never, config as never, events as never), presence };
+  const socketAuth = {
+    isSessionActive: jest.fn().mockResolvedValue(true),
+  };
+  return {
+    gateway: new PresenceGateway(
+      presence as never,
+      socketAuth as never,
+      config as never,
+      events as never,
+    ),
+    presence,
+    socketAuth,
+  };
 }
 
 function socket(id: string, userId = 'user-a') {
-  return { id, data: { userId }, join: jest.fn(), disconnect: jest.fn() } as never;
+  return {
+    id,
+    data: { userId, deviceId: `device-${id}` },
+    connected: true,
+    join: jest.fn(),
+    disconnect: jest.fn(function(this: { connected: boolean }) {
+      this.connected = false;
+    }),
+  } as never;
 }
 
 describe('PresenceGateway multiple-device aggregation', () => {
@@ -124,5 +144,120 @@ describe('PresenceGateway multiple-device aggregation', () => {
     expect(presence.setOffline).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(1);
     expect(presence.setOffline).toHaveBeenLastCalledWith('user-a');
+  });
+
+  it('disconnects a revoked long-lived socket before accepting activity', async () => {
+    const { gateway, socketAuth, presence } = createGateway();
+    const device = socket('a') as any;
+    socketAuth.isSessionActive
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await gateway.handleConnection(device);
+    await gateway.handleActivity(device);
+
+    expect(device.disconnect).toHaveBeenCalledWith(true);
+    expect(presence.setOnline).toHaveBeenCalledTimes(1);
+  });
+
+  it('periodically disconnects a passive socket after its session is revoked', async () => {
+    const { gateway, socketAuth } = createGateway();
+    const device = socket('a') as any;
+    socketAuth.isSessionActive
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await gateway.handleConnection(device);
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(device.disconnect).toHaveBeenCalledWith(true);
+  });
+
+  it('force-disconnects every socket and immediately publishes offline', async () => {
+    const { gateway, presence } = createGateway();
+    const first = socket('a') as any;
+    const second = socket('b') as any;
+    (gateway as any).server = {
+      sockets: {
+        sockets: new Map([
+          [first.id, first],
+          [second.id, second],
+        ]),
+      },
+    };
+    await gateway.handleConnection(first);
+    await gateway.handleConnection(second);
+
+    await gateway.disconnectUser('user-a');
+
+    expect(first.disconnect).toHaveBeenCalledWith(true);
+    expect(second.disconnect).toHaveBeenCalledWith(true);
+    expect(presence.setOffline).toHaveBeenLastCalledWith('user-a');
+    expect(gateway.isUserOnline('user-a')).toBe(false);
+  });
+
+  it('can force an offline state before the Socket.IO server is attached', async () => {
+    const { gateway, presence } = createGateway();
+
+    await expect(gateway.disconnectUser('user-a')).resolves.toBeUndefined();
+
+    expect(presence.setOffline).toHaveBeenCalledWith('user-a');
+  });
+
+  it('does not register a socket that disconnects while durable auth is pending', async () => {
+    const { gateway, socketAuth, presence } = createGateway();
+    let resolveAuth!: (active: boolean) => void;
+    socketAuth.isSessionActive.mockImplementationOnce(() =>
+      new Promise<boolean>((resolve) => { resolveAuth = resolve; }));
+    const device = socket('a') as any;
+
+    const connecting = gateway.handleConnection(device);
+    device.connected = false;
+    resolveAuth(true);
+    await connecting;
+
+    expect(gateway.isUserOnline('user-a')).toBe(false);
+    expect(device.join).not.toHaveBeenCalled();
+    expect(presence.setOnline).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule timers when disconnect occurs during online publication', async () => {
+    const { gateway, presence, socketAuth } = createGateway();
+    let resolvePresence!: (value: { status: string; updatedAt: Date }) => void;
+    presence.setOnline.mockImplementationOnce(() =>
+      new Promise((resolve) => { resolvePresence = resolve; }));
+    const device = socket('a') as any;
+
+    const connecting = gateway.handleConnection(device);
+    while (!resolvePresence) await Promise.resolve();
+    device.connected = false;
+    await gateway.handleDisconnect(device);
+    resolvePresence({ status: 'online', updatedAt: now });
+    await connecting;
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(socketAuth.isSessionActive).toHaveBeenCalledTimes(1);
+    expect(gateway.isUserOnline('user-a')).toBe(false);
+  });
+
+  it('does not reschedule a watchdog after disconnect during revalidation', async () => {
+    const { gateway, socketAuth } = createGateway();
+    const device = socket('a') as any;
+    await gateway.handleConnection(device);
+    let resolveAuth!: (active: boolean) => void;
+    socketAuth.isSessionActive.mockImplementationOnce(() =>
+      new Promise<boolean>((resolve) => { resolveAuth = resolve; }));
+
+    jest.advanceTimersByTime(30_000);
+    await Promise.resolve();
+    device.connected = false;
+    await gateway.handleDisconnect(device);
+    resolveAuth(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(socketAuth.isSessionActive).toHaveBeenCalledTimes(2);
+    expect(gateway.isUserOnline('user-a')).toBe(false);
   });
 });

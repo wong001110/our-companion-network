@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
@@ -20,6 +21,8 @@ import {
 } from './dto/portal-query.dto';
 import { boundedPage, pageEnvelope, stableOrderBy } from '../common/pagination';
 import { StorageService } from '../storage/storage.service';
+import { PresenceGateway } from '../presence/presence.gateway';
+import { SocialEventPublisher } from '../common/social-event-publisher.service';
 
 @Injectable()
 export class PortalService {
@@ -27,6 +30,8 @@ export class PortalService {
     private readonly prisma: PrismaService,
     private readonly companions: CompanionService,
     private readonly storage: StorageService,
+    @Optional() private readonly presence?: PresenceGateway,
+    @Optional() private readonly events?: SocialEventPublisher,
   ) {}
 
   async summary(userId: string) {
@@ -537,6 +542,7 @@ export class PortalService {
       where: { id: session.id },
       data: { revokedAt: new Date(), csrfTokenHash: null },
     });
+    await this.presence?.disconnectDevice(userId, session.deviceId);
     return {
       revoked: true,
       revokedCurrent: session.deviceId === currentDeviceId,
@@ -544,10 +550,22 @@ export class PortalService {
   }
 
   async revokeOtherDevices(userId: string, currentDeviceId: string) {
+    const revokedAt = new Date();
     const result = await this.prisma.deviceSession.updateMany({
       where: { userId, deviceId: { not: currentDeviceId }, revokedAt: null },
-      data: { revokedAt: new Date(), csrfTokenHash: null },
+      data: { revokedAt, csrfTokenHash: null },
     });
+    const sessions = await this.prisma.deviceSession.findMany({
+      where: {
+        userId,
+        deviceId: { not: currentDeviceId },
+        revokedAt,
+      },
+      select: { deviceId: true },
+    });
+    await Promise.all(sessions.map((session) =>
+      this.presence?.disconnectDevice(userId, session.deviceId)
+        .catch(() => undefined)));
     return { revoked: result.count };
   }
 
@@ -573,6 +591,7 @@ export class PortalService {
       });
     }
     const passwordHash = await bcrypt.hash(dto.newPassword, 12);
+    const revokedAt = new Date();
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: userId },
@@ -580,9 +599,20 @@ export class PortalService {
       }),
       this.prisma.deviceSession.updateMany({
         where: { userId, deviceId: { not: currentDeviceId }, revokedAt: null },
-        data: { revokedAt: new Date(), csrfTokenHash: null },
+        data: { revokedAt, csrfTokenHash: null },
       }),
     ]);
+    const sessions = await this.prisma.deviceSession.findMany({
+      where: {
+        userId,
+        deviceId: { not: currentDeviceId },
+        revokedAt,
+      },
+      select: { deviceId: true },
+    });
+    await Promise.all(sessions.map((session) =>
+      this.presence?.disconnectDevice(userId, session.deviceId)
+        .catch(() => undefined)));
     return { changed: true, otherDevicesRevoked: true };
   }
 
@@ -866,6 +896,42 @@ export class PortalService {
           deletionAttemptCount: 0,
         },
       });
+      await tx.visitInvitation.updateMany({
+        where: {
+          status: 'pending',
+          OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
+        },
+        data: {
+          status: 'cancelled',
+          cancelledAt: deletionRequestedAt,
+          assetPackRefId: null,
+        },
+      });
+      await tx.visitSession.updateMany({
+        where: {
+          state: { in: ['preparing', 'ready'] },
+          OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
+        },
+        data: {
+          state: 'cancelled',
+          endedAt: deletionRequestedAt,
+          endReason: 'account_deletion_requested',
+          assetPackRefId: null,
+        },
+      });
+      await tx.visitSession.updateMany({
+        where: {
+          state: { in: ['active', 'ending'] },
+          OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
+        },
+        data: {
+          state: 'ended',
+          endingAt: deletionRequestedAt,
+          endedAt: deletionRequestedAt,
+          endReason: 'account_deletion_requested',
+          assetPackRefId: null,
+        },
+      });
       await tx.networkCompanion.updateMany({
         where: { ownerUserId: userId },
         data: {
@@ -891,6 +957,8 @@ export class PortalService {
       });
       return deletionRequestedAt;
     });
+    await this.presence?.disconnectUser(userId).catch(() => undefined);
+    await this.publishAccountDeletionTerminalEvents(userId, requestedAt);
 
     try {
       const result = await this.finalizePendingAccountDeletion(
@@ -916,6 +984,76 @@ export class PortalService {
         pending: true,
         deleteAfter: deleteAfter.toISOString(),
       };
+    }
+  }
+
+  private async publishAccountDeletionTerminalEvents(
+    userId: string,
+    requestedAt: Date,
+  ): Promise<void> {
+    if (!this.events) return;
+    let invitationCursor: string | undefined;
+    for (;;) {
+      const invitations = await this.prisma.visitInvitation.findMany({
+        where: {
+          status: 'cancelled',
+          cancelledAt: requestedAt,
+          OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
+        },
+        select: {
+          id: true,
+          visitorOwnerUserId: true,
+          hostUserId: true,
+        },
+        orderBy: { id: 'asc' },
+        take: 100,
+        ...(invitationCursor
+          ? { cursor: { id: invitationCursor }, skip: 1 }
+          : {}),
+      });
+      for (const invitation of invitations) {
+        const counterpart = invitation.visitorOwnerUserId === userId
+          ? invitation.hostUserId
+          : invitation.visitorOwnerUserId;
+        this.events.publishToUser(counterpart, 'visit.invitation.updated', {
+          invitationId: invitation.id,
+        });
+      }
+      if (invitations.length < 100) break;
+      invitationCursor = invitations[invitations.length - 1].id;
+    }
+
+    let sessionCursor: string | undefined;
+    for (;;) {
+      const sessions = await this.prisma.visitSession.findMany({
+        where: {
+          endedAt: requestedAt,
+          endReason: 'account_deletion_requested',
+          OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
+        },
+        select: {
+          id: true,
+          visitorOwnerUserId: true,
+          hostUserId: true,
+          state: true,
+        },
+        orderBy: { id: 'asc' },
+        take: 100,
+        ...(sessionCursor
+          ? { cursor: { id: sessionCursor }, skip: 1 }
+          : {}),
+      });
+      for (const session of sessions) {
+        const counterpart = session.visitorOwnerUserId === userId
+          ? session.hostUserId
+          : session.visitorOwnerUserId;
+        this.events.publishToUser(counterpart, 'visit.session.ended', {
+          sessionId: session.id,
+          state: session.state,
+        });
+      }
+      if (sessions.length < 100) break;
+      sessionCursor = sessions[sessions.length - 1].id;
     }
   }
 

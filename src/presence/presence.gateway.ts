@@ -26,6 +26,7 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   private readonly userSockets = new Map<string, Set<string>>();
   private readonly offlineTimers = new Map<string, NodeJS.Timeout>();
   private readonly activityTimers = new Map<string, NodeJS.Timeout>();
+  private readonly validationTimers = new Map<string, NodeJS.Timeout>();
   private readonly socketActivity = new Map<string, number>();
   private readonly reconnectEvents: number[] = [];
 
@@ -42,11 +43,8 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   async handleConnection(client: Socket): Promise<void> {
-    const userId = client.data.userId as string | undefined;
-    if (!userId) {
-      client.disconnect(true);
-      return;
-    }
+    const userId = await this.validateClientSession(client);
+    if (!userId || !this.isConnected(client)) return;
     const timer = this.offlineTimers.get(userId);
     if (timer) {
       clearTimeout(timer);
@@ -59,7 +57,10 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     this.socketActivity.set(client.id, Date.now());
     this.userSockets.set(userId, sockets);
     await this.publishPresence(userId, 'online');
+    if (!this.isConnected(client)
+      || !this.userSockets.get(userId)?.has(client.id)) return;
     this.scheduleIdleCheck(userId);
+    this.scheduleSessionValidation(client);
   }
 
   async handleDisconnect(client: Socket): Promise<void> {
@@ -69,6 +70,11 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     if (!sockets) return;
     sockets.delete(client.id);
     this.socketActivity.delete(client.id);
+    const validationTimer = this.validationTimers.get(client.id);
+    if (validationTimer) {
+      clearTimeout(validationTimer);
+      this.validationTimers.delete(client.id);
+    }
     if (sockets.size > 0) {
       await this.publishAggregatePresence(userId);
       this.scheduleIdleCheck(userId);
@@ -97,6 +103,28 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     this.events.publishToUser(userId, event, data);
   }
 
+  async disconnectUser(userId: string): Promise<void> {
+    const socketIds = [...(this.userSockets.get(userId) ?? [])];
+    this.clearUserTimers(userId);
+    this.userSockets.delete(userId);
+    for (const socketId of socketIds) {
+      this.socketActivity.delete(socketId);
+      const timer = this.validationTimers.get(socketId);
+      if (timer) clearTimeout(timer);
+      this.validationTimers.delete(socketId);
+      this.server?.sockets.sockets.get(socketId)?.disconnect(true);
+    }
+    await this.publishPresence(userId, 'offline');
+  }
+
+  async disconnectDevice(userId: string, deviceId: string): Promise<void> {
+    const sockets = [...(this.userSockets.get(userId) ?? [])];
+    for (const socketId of sockets) {
+      const socket = this.server?.sockets.sockets.get(socketId);
+      if (socket?.data.deviceId === deviceId) socket.disconnect(true);
+    }
+  }
+
   isUserOnline(userId: string): boolean {
     return (this.userSockets.get(userId)?.size ?? 0) > 0;
   }
@@ -115,13 +143,26 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
 
   @SubscribeMessage('presence.activity')
   async handleActivity(@ConnectedSocket() client: Socket): Promise<void> {
-    const userId = client.data.userId as string | undefined;
-    if (!userId) return;
+    const userId = await this.validateClientSession(client);
+    if (!userId || !this.userSockets.get(userId)?.has(client.id)) return;
     const now = Date.now();
     if (now - (this.socketActivity.get(client.id) ?? 0) < 15_000) return;
     this.socketActivity.set(client.id, now);
     await this.publishAggregatePresence(userId);
     this.scheduleIdleCheck(userId);
+  }
+
+  async validateClientSession(client: Socket): Promise<string | undefined> {
+    const userId = client.data.userId as string | undefined;
+    const deviceId = client.data.deviceId as string | undefined;
+    if (!userId || !deviceId) {
+      client.disconnect(true);
+      return undefined;
+    }
+    const active = await this.isClientSessionActive(userId, deviceId);
+    if (!active) client.disconnect(true);
+    if (!active || !this.isConnected(client)) return undefined;
+    return userId;
   }
 
   private scheduleIdleCheck(userId: string): void {
@@ -141,6 +182,7 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   private async publishAggregatePresence(userId: string): Promise<void> {
+    if (!await this.revalidateUserSockets(userId)) return;
     const idleMs = Math.max(1, Number(this.config.get<string>('PRESENCE_IDLE_SECONDS', '300'))) * 1000;
     const sockets = this.userSockets.get(userId);
     if (!sockets?.size) return;
@@ -176,5 +218,67 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     ) {
       this.reconnectEvents.shift();
     }
+  }
+
+  private scheduleSessionValidation(client: Socket): void {
+    const configured = Number(this.config.get<string>('SOCKET_SESSION_REVALIDATE_SECONDS', '30'));
+    const delayMs = Math.max(5, Number.isFinite(configured) ? configured : 30) * 1000;
+    const timer = setTimeout(async () => {
+      this.validationTimers.delete(client.id);
+      const userId = await this.validateClientSession(client);
+      if (!userId || !this.userSockets.get(userId)?.has(client.id)) return;
+      this.scheduleSessionValidation(client);
+    }, delayMs);
+    this.validationTimers.set(client.id, timer);
+  }
+
+  private async revalidateUserSockets(userId: string): Promise<boolean> {
+    const socketIds = [...(this.userSockets.get(userId) ?? [])];
+    const invalidSocketIds: string[] = [];
+    for (const socketId of socketIds) {
+      const socket = this.server?.sockets.sockets.get(socketId);
+      if (!socket) continue;
+      const deviceId = socket.data.deviceId as string | undefined;
+      if (!deviceId || !await this.isClientSessionActive(userId, deviceId)) {
+        invalidSocketIds.push(socketId);
+      }
+    }
+    const sockets = this.userSockets.get(userId);
+    for (const socketId of invalidSocketIds) {
+      sockets?.delete(socketId);
+      this.socketActivity.delete(socketId);
+      const timer = this.validationTimers.get(socketId);
+      if (timer) clearTimeout(timer);
+      this.validationTimers.delete(socketId);
+      this.server?.sockets.sockets.get(socketId)?.disconnect(true);
+    }
+    if (sockets?.size) return true;
+    if (invalidSocketIds.length) {
+      this.userSockets.delete(userId);
+      this.clearUserTimers(userId);
+      await this.publishPresence(userId, 'offline');
+    }
+    return false;
+  }
+
+  private clearUserTimers(userId: string): void {
+    const offline = this.offlineTimers.get(userId);
+    if (offline) clearTimeout(offline);
+    this.offlineTimers.delete(userId);
+    const activity = this.activityTimers.get(userId);
+    if (activity) clearTimeout(activity);
+    this.activityTimers.delete(userId);
+  }
+
+  private async isClientSessionActive(
+    userId: string,
+    deviceId: string,
+  ): Promise<boolean> {
+    return this.socketAuth.isSessionActive(userId, deviceId)
+      .catch(() => false);
+  }
+
+  private isConnected(client: Socket): boolean {
+    return client.connected !== false;
   }
 }

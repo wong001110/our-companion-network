@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
   ForbiddenException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +13,7 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
+import { PresenceGateway } from '../presence/presence.gateway';
 
 const REFRESH_TOKEN_COST = 12;
 const UID_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -25,6 +27,7 @@ export class IdentityService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    @Optional() private presence?: PresenceGateway,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -82,6 +85,8 @@ export class IdentityService {
         where: { id: reused.id },
         data: { revokedAt: new Date(), csrfTokenHash: null },
       });
+      await this.presence?.disconnectDevice(reused.userId, deviceId)
+        .catch(() => undefined);
       throw new UnauthorizedException('Invalid refresh token');
     }
     const activeSession = await this.findMatchingSession(sessions, refreshToken, 'refreshTokenHash');
@@ -103,6 +108,8 @@ export class IdentityService {
       where: { userId, deviceId, revokedAt: null },
       data: { revokedAt: new Date(), csrfTokenHash: null },
     });
+    await this.presence?.disconnectDevice(userId, deviceId)
+      .catch(() => undefined);
     return { message: 'Logged out successfully' };
   }
 

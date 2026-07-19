@@ -38,18 +38,9 @@ export class SocketAuthService {
         }
         const payload = await this.jwtService.verifyAsync<AccessPayload>(token);
         if (!payload.sub || payload.deviceId !== deviceId) return next(new Error('AUTHENTICATION_FAILED'));
-        const session = await this.prisma.deviceSession.findUnique({
-          where: { userId_deviceId: { userId: payload.sub, deviceId } },
-          select: {
-            revokedAt: true,
-            expiresAt: true,
-            user: { select: { accountStatus: true } },
-          },
-        });
-        if (!session
-          || session.revokedAt
-          || session.expiresAt <= new Date()
-          || session.user.accountStatus !== 'ACTIVE') return next(new Error('AUTHENTICATION_FAILED'));
+        if (!await this.isSessionActive(payload.sub, deviceId)) {
+          return next(new Error('AUTHENTICATION_FAILED'));
+        }
 
         client.data.userId = payload.sub;
         client.data.deviceId = deviceId;
@@ -60,6 +51,34 @@ export class SocketAuthService {
         next(new Error('AUTHENTICATION_FAILED'));
       }
     });
+  }
+
+  /**
+   * Socket.IO only runs connection middleware once. Revalidate long-lived
+   * sockets against the durable session and account state before accepting
+   * later activity or publishing presence.
+   */
+  async isSessionActive(userId: string, deviceId: string): Promise<boolean> {
+    const session = await this.prisma.deviceSession.findUnique({
+      where: { userId_deviceId: { userId, deviceId } },
+      select: {
+        revokedAt: true,
+        expiresAt: true,
+        user: {
+          select: {
+            accountStatus: true,
+            deletionRequestedAt: true,
+          },
+        },
+      },
+    });
+    return Boolean(
+      session
+      && !session.revokedAt
+      && session.expiresAt > new Date()
+      && session.user.accountStatus === 'ACTIVE'
+      && !session.user.deletionRequestedAt,
+    );
   }
 
   private allowAttempt(address: string): boolean {

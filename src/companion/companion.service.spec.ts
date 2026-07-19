@@ -42,6 +42,128 @@ describe('CompanionService final asset-pack lifecycle', () => {
     await expect(service.completeAssetPack('user-1', 'pack-1')).resolves.toMatchObject({ assetPack: { id: 'pack-1' }, companion: { id: 'companion-1' } });
   });
 
+  it('discovers active staging durably and lets only one concurrent cleanup worker claim it', async () => {
+    const pack = {
+      id: activePack.id,
+      objectPrefix: 'companion-assets/user-1/companion-1/hash',
+    };
+    let claims = 0;
+    const updateMany = jest.fn().mockImplementation(async ({ data }) => {
+      if (data.failureCode === 'ASSET_STAGING_CLEANUP_RUNNING') {
+        claims++;
+        return { count: claims === 1 ? 1 : 0 };
+      }
+      return { count: 1 };
+    });
+    const deleteObjectPrefix = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      companionAssetPack: {
+        findMany: jest.fn().mockResolvedValue([pack]),
+        updateMany,
+      },
+    };
+    const service = new CompanionService(prisma as never, {
+      capability: { uploadsEnabled: true },
+      limits: { uploadUrlTtlSeconds: 900 },
+      deleteObjectPrefix,
+    } as never, {} as never);
+
+    await expect(Promise.all([
+      service.cleanupActivePackStaging(),
+      service.cleanupActivePackStaging(),
+    ])).resolves.toEqual(expect.arrayContaining([0, 1]));
+    expect(deleteObjectPrefix).toHaveBeenCalledTimes(1);
+    expect(deleteObjectPrefix).toHaveBeenCalledWith(`${pack.objectPrefix}/staging`);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: pack.id,
+        status: 'active',
+        stagingCleanedAt: null,
+      }),
+      data: expect.objectContaining({ stagingCleanedAt: expect.any(Date), failureCode: null }),
+    }));
+  });
+
+  it('records a failed active prefix and continues cleaning later packs', async () => {
+    const failedPack = {
+      id: 'pack-failed',
+      objectPrefix: 'companion-assets/user-1/companion-1/failed',
+    };
+    const healthyPack = {
+      id: 'pack-healthy',
+      objectPrefix: 'companion-assets/user-1/companion-1/healthy',
+    };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const deleteObjectPrefix = jest.fn()
+      .mockRejectedValueOnce(new Error('poisoned prefix'))
+      .mockResolvedValueOnce(undefined);
+    const refreshCapability = jest.fn().mockResolvedValue({
+      uploadsEnabled: true,
+    });
+    const service = new CompanionService({
+      companionAssetPack: {
+        findMany: jest.fn().mockResolvedValue([failedPack, healthyPack]),
+        updateMany,
+      },
+    } as never, {
+      capability: { uploadsEnabled: true },
+      limits: { uploadUrlTtlSeconds: 900 },
+      deleteObjectPrefix,
+      refreshCapability,
+    } as never, {} as never);
+
+    await expect(service.cleanupActivePackStaging()).resolves.toBe(1);
+    expect(deleteObjectPrefix).toHaveBeenNthCalledWith(
+      1,
+      `${failedPack.objectPrefix}/staging`,
+    );
+    expect(deleteObjectPrefix).toHaveBeenNthCalledWith(
+      2,
+      `${healthyPack.objectPrefix}/staging`,
+    );
+    expect(refreshCapability).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: failedPack.id,
+        status: 'active',
+        stagingCleanedAt: null,
+        failureCode: 'ASSET_STAGING_CLEANUP_RUNNING',
+      },
+      data: { failureCode: 'ASSET_STAGING_CLEANUP_RETRYABLE' },
+    });
+  });
+
+  it('fences active staging cleanup behind both activation and upload URL expiry', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new CompanionService({
+      companionAssetPack: { findMany },
+    } as never, {
+      capability: { uploadsEnabled: true },
+      limits: { uploadUrlTtlSeconds: 900, uploadSessionTtlHours: 24 },
+    } as never, {} as never);
+
+    await service.cleanupActivePackStaging();
+
+    const where = findMany.mock.calls[0][0].where;
+    expect(findMany.mock.calls[0][0].orderBy).toEqual([
+      { updatedAt: 'asc' },
+      { id: 'asc' },
+    ]);
+    expect(where).toEqual(expect.objectContaining({
+      status: 'active',
+      stagingCleanedAt: null,
+      activatedAt: { lt: expect.any(Date) },
+      AND: expect.arrayContaining([{
+        OR: [
+          { lastUploadUrlIssuedAt: null },
+          { lastUploadUrlIssuedAt: { lt: expect.any(Date) } },
+        ],
+      }]),
+    }));
+    expect(Date.now() - where.activatedAt.lt.getTime())
+      .toBeGreaterThanOrEqual(86_405_000);
+  });
+
   it('requires activation when an otherwise reusable active pack is orphaned from its companion pointer', async () => {
     const orphan = { ...uploadPack('uploading'), status: 'active', companion: { activeAssetPackId: 'other-pack' } };
     const tx = {
@@ -177,18 +299,56 @@ describe('CompanionService final asset-pack lifecycle', () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const service = new CompanionService({ companionAssetPack: { findMany } } as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 } } as never, {} as never);
     await service.cleanupSupersededPacks();
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ visitInvitationRefs: { none: { status: 'pending', assetPackRefId: { not: null } } }, visitSessionRefs: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] }, assetPackRefId: { not: null } } } })]) }) }));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        AND: [
+          { OR: expect.arrayContaining([expect.objectContaining({ visitInvitationRefs: { none: { status: 'pending', assetPackRefId: { not: null } } }, visitSessionRefs: { none: { state: { in: ['preparing', 'ready', 'active', 'ending'] }, assetPackRefId: { not: null } } } })]) },
+          {
+            OR: [
+              { lastUploadUrlIssuedAt: null },
+              { lastUploadUrlIssuedAt: { lt: expect.any(Date) } },
+            ],
+          },
+        ],
+      },
+    }));
   });
 
   it('keeps a claimed deleting pack for a later retry when R2 deletion fails', async () => {
     const prisma = { companionAssetPack: { findMany: jest.fn().mockResolvedValue([{ id: 'pack-1', status: 'deleting', objectPrefix: 'redacted', files: [] }]), updateMany: jest.fn().mockResolvedValue({ count: 1 }), delete: jest.fn() } };
     const service = new CompanionService(prisma as never, { capability: { uploadsEnabled: true }, limits: { supersededPackRetentionDays: 30 }, deleteObjects: jest.fn().mockRejectedValue(new Error('unavailable')) } as never, {} as never);
-    await expect(service.cleanupSupersededPacks()).rejects.toThrow('unavailable');
+    await expect(service.cleanupSupersededPacks()).resolves.toBe(0);
     expect(prisma.companionAssetPack.updateMany).toHaveBeenCalledWith({
       where: { id: 'pack-1', status: 'deleting' },
       data: { failureCode: 'ASSET_CLEANUP_FAILED' },
     });
     expect(prisma.companionAssetPack.delete).not.toHaveBeenCalled();
+  });
+
+  it('does not delete a failed pack while its last staging PUT URL is still valid', async () => {
+    const pack = {
+      ...uploadPack('uploading'),
+      status: 'failed',
+      lastUploadUrlIssuedAt: new Date(),
+    };
+    const updateMany = jest.fn();
+    const deleteObjects = jest.fn();
+    const prisma = {
+      companionAssetPack: {
+        findUnique: jest.fn().mockResolvedValue(pack),
+        updateMany,
+      },
+    };
+    const service = new CompanionService(prisma as never, {
+      capability: { uploadsEnabled: true },
+      limits: { uploadUrlTtlSeconds: 900 },
+      deleteObjects,
+    } as never, {} as never);
+
+    await expect(service.deleteAssetPack('user-1', pack.id))
+      .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_UPLOAD_URLS_ACTIVE' }) });
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(deleteObjects).not.toHaveBeenCalled();
   });
 
   it('never deletes objects for an active pack, even if a stale cleanup read includes it', async () => {
@@ -318,8 +478,47 @@ describe('CompanionService final asset-pack lifecycle', () => {
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.companionAssetPack.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: expect.objectContaining({ id: verifying.id, status: 'verifying' }), data: expect.objectContaining({ status: 'active' }) }));
     expect(storage.copyVerifiedObject).toHaveBeenCalledTimes(verifying.files.length);
-    expect(storage.deleteObjectPrefix).toHaveBeenCalledWith(`${verifying.objectPrefix}/staging`);
-    expect(storage.deleteObjectPrefix.mock.invocationCallOrder[0]).toBeLessThan(prisma.$transaction.mock.invocationCallOrder[0]);
+    expect(storage.deleteObjectPrefix).not.toHaveBeenCalled();
+  });
+
+  it('preserves staging when activation fails so Complete can retry verification', async () => {
+    const uploading = uploadPack('uploading');
+    const verifying = uploadPack('verifying');
+    const deleteObjectPrefix = jest.fn();
+    const prisma = {
+      companionAssetPack: {
+        findUnique: jest.fn().mockResolvedValueOnce(uploading).mockResolvedValueOnce(verifying),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $transaction: jest.fn().mockRejectedValue(new Error('database unavailable')),
+    };
+    const storage = {
+      capability: { uploadsEnabled: true },
+      limits: {
+        uploadSessionTtlHours: 24,
+        maxFileBytes: 10,
+        maxPackBytes: 10,
+        maxPackFiles: 10,
+      },
+      inspectObjectSha256: jest.fn().mockResolvedValue({
+        sizeBytes: 1,
+        mimeType: 'image/png',
+        sha256: 'a'.repeat(64),
+        etag: '"fixture-etag"',
+      }),
+      copyVerifiedObject: jest.fn(),
+      putManifest: jest.fn(),
+      deleteObjectPrefix,
+    };
+    const service = new CompanionService(prisma as never, storage as never, {} as never);
+
+    await expect(service.completeAssetPack('user-1', uploading.id))
+      .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ASSET_VERIFICATION_RETRYABLE' }) });
+    expect(deleteObjectPrefix).not.toHaveBeenCalled();
+    expect(prisma.companionAssetPack.updateMany).toHaveBeenLastCalledWith({
+      where: { id: verifying.id, status: 'verifying' },
+      data: { failureCode: 'ASSET_VERIFICATION_RETRYABLE' },
+    });
   });
 
   it('rejects same-size staging bytes with the wrong SHA-256 before publishing', async () => {
@@ -360,6 +559,38 @@ describe('CompanionService final asset-pack lifecycle', () => {
 
     await service.abandonExpiredUploads();
 
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ status: 'verifying', updatedAt: expect.anything() })]) })]) }) }));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        AND: [
+          { OR: expect.arrayContaining([expect.objectContaining({ OR: expect.arrayContaining([expect.objectContaining({ status: 'verifying', updatedAt: expect.anything() })]) })]) },
+          {
+            OR: [
+              { lastUploadUrlIssuedAt: null },
+              { lastUploadUrlIssuedAt: { lt: expect.any(Date) } },
+            ],
+          },
+        ],
+      },
+    }));
+  });
+
+  it('does not abandon an expired upload until its last staging PUT URL has expired', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new CompanionService({ companionAssetPack: { findMany } } as never, {
+      capability: { uploadsEnabled: true },
+      limits: { uploadSessionTtlHours: 24, uploadUrlTtlSeconds: 900 },
+    } as never, {} as never);
+
+    await service.abandonExpiredUploads();
+
+    const uploadFence = findMany.mock.calls[0][0].where.AND[1];
+    expect(uploadFence).toEqual({
+      OR: [
+        { lastUploadUrlIssuedAt: null },
+        { lastUploadUrlIssuedAt: { lt: expect.any(Date) } },
+      ],
+    });
+    expect(Date.now() - uploadFence.OR[1].lastUploadUrlIssuedAt.lt.getTime())
+      .toBeGreaterThanOrEqual(905_000);
   });
 });

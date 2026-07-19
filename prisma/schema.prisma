@@ -204,6 +204,7 @@ model CompanionAssetPack {
   totalBytes       BigInt
   failureCode      String?
   lastUploadUrlIssuedAt DateTime?
+  stagingCleanedAt DateTime?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   completedAt      DateTime?
@@ -216,6 +217,7 @@ model CompanionAssetPack {
 
   @@unique([companionId, manifestHash])
   @@index([companionId, status])
+  @@index([status, stagingCleanedAt])
 }
 
 model CompanionAssetFile {

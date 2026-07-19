@@ -78,7 +78,11 @@ export class PresenceService implements OnModuleInit {
 
   async getFriendsPresence(userId: string) {
     const friendships = await this.prisma.friendship.findMany({
-      where: { userId },
+      where: {
+        userId,
+        user: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+        friend: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+      },
       select: { friendId: true },
     });
 
@@ -108,13 +112,23 @@ export class PresenceService implements OnModuleInit {
   }
 
   async getFriendIds(userId: string): Promise<string[]> {
-    const friendships = await this.prisma.friendship.findMany({ where: { userId }, select: { friendId: true } });
+    const friendships = await this.prisma.friendship.findMany({
+      where: {
+        userId,
+        friend: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+      },
+      select: { friendId: true },
+    });
     return friendships.map((friendship) => friendship.friendId);
   }
 
   async getOnlineFriends(userId: string) {
     const friendships = await this.prisma.friendship.findMany({
-      where: { userId },
+      where: {
+        userId,
+        user: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+        friend: { accountStatus: 'ACTIVE', deletionRequestedAt: null },
+      },
       select: { friendId: true },
     });
 

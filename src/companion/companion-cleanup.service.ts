@@ -20,10 +20,19 @@ export class CompanionCleanupService implements OnModuleInit, OnModuleDestroy {
     if (this.running) return;
     this.running = true;
     try {
-      await this.companions.abandonExpiredUploads(100);
-      await this.companions.cleanupSupersededPacks(100);
-    } catch {
-      // Storage outages are retried on the next bounded pass.
+      const phases = [
+        () => this.companions.abandonExpiredUploads(100),
+        () => this.companions.cleanupActivePackStaging(100),
+        () => this.companions.cleanupSupersededPacks(100),
+      ];
+      for (const phase of phases) {
+        try {
+          await phase();
+        } catch {
+          // A phase-level database or storage failure must not starve later
+          // independent cleanup phases. Each phase retries on the next pass.
+        }
+      }
     } finally { this.running = false; }
   }
 }

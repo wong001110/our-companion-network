@@ -12,14 +12,25 @@ describe('IdentityService logout', () => {
 
   it('revokes only the matching active device session', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const service = new IdentityService({ deviceSession: { updateMany } } as never, {} as never, {} as never);
+    const presence = { disconnectDevice: jest.fn().mockResolvedValue(undefined) };
+    const service = new IdentityService(
+      { deviceSession: { updateMany } } as never,
+      {} as never,
+      {} as never,
+      presence as never,
+    );
     await expect(service.logout('user-1', 'device-a', 'device-a')).resolves.toEqual({ message: 'Logged out successfully' });
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-1', deviceId: 'device-a', revokedAt: null } }));
+    expect(presence.disconnectDevice).toHaveBeenCalledWith(
+      'user-1',
+      'device-a',
+    );
   });
 
   it('revokes a device session when a consumed refresh token is reused', async () => {
     const previousRefreshTokenHash = await bcrypt.hash('consumed-refresh-token', 4);
     const update = jest.fn().mockResolvedValue({});
+    const presence = { disconnectDevice: jest.fn().mockResolvedValue(undefined) };
     const service = new IdentityService({
       deviceSession: {
         findMany: jest.fn().mockResolvedValue([{
@@ -32,13 +43,17 @@ describe('IdentityService logout', () => {
         }]),
         update,
       },
-    } as never, {} as never, {} as never);
+    } as never, {} as never, {} as never, presence as never);
 
     await expect(service.refreshToken('consumed-refresh-token', 'device-a')).rejects.toBeInstanceOf(UnauthorizedException);
     expect(update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'session-1' },
       data: expect.objectContaining({ revokedAt: expect.any(Date) }),
     }));
+    expect(presence.disconnectDevice).toHaveBeenCalledWith(
+      'user-1',
+      'device-a',
+    );
   });
 
   it('retries UID or Friend Code collisions while registering and returns the public UID', async () => {

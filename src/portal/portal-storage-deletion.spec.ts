@@ -85,8 +85,8 @@ describe('Portal staged R2 deletion', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
       deviceSession: { updateMany: jest.fn() },
-      visitSession: { deleteMany: jest.fn() },
-      visitInvitation: { deleteMany: jest.fn() },
+      visitSession: { deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitInvitation: { deleteMany: jest.fn(), updateMany: jest.fn() },
     };
     const prisma = {
       user: {
@@ -105,6 +105,21 @@ describe('Portal staged R2 deletion', () => {
         }]),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      visitInvitation: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'invitation-1',
+          visitorOwnerUserId: 'user-1',
+          hostUserId: 'friend-1',
+        }]),
+      },
+      visitSession: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'session-1',
+          visitorOwnerUserId: 'user-1',
+          hostUserId: 'friend-1',
+          state: 'ended',
+        }]),
+      },
       $transaction: jest.fn((operation: (client: typeof tx) => unknown) =>
         operation(tx)),
     };
@@ -113,10 +128,14 @@ describe('Portal staged R2 deletion', () => {
       deleteObjectPrefix: jest.fn()
         .mockRejectedValue(new Error('ASSET_STORAGE_DELETE_INCOMPLETE')),
     };
+    const presence = { disconnectUser: jest.fn().mockResolvedValue(undefined) };
+    const events = { publishToUser: jest.fn() };
     const service = new PortalService(
       prisma as never,
       {} as never,
       storage as never,
+      presence as never,
+      events as never,
     );
 
     await expect(service.deleteAccount('user-1')).resolves.toEqual({
@@ -141,6 +160,61 @@ describe('Portal staged R2 deletion', () => {
         deletionRequestedAt: requestedAt,
       }),
     }));
+    expect(tx.visitInvitation.updateMany).toHaveBeenCalledWith({
+      where: {
+        status: 'pending',
+        OR: [
+          { visitorOwnerUserId: 'user-1' },
+          { hostUserId: 'user-1' },
+        ],
+      },
+      data: {
+        status: 'cancelled',
+        cancelledAt: requestedAt,
+        assetPackRefId: null,
+      },
+    });
+    expect(tx.visitSession.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          state: { in: ['preparing', 'ready'] },
+        }),
+        data: expect.objectContaining({
+          state: 'cancelled',
+          endReason: 'account_deletion_requested',
+          assetPackRefId: null,
+        }),
+      }),
+    );
+    expect(tx.visitInvitation.updateMany.mock.invocationCallOrder[0])
+      .toBeLessThan(tx.networkCompanion.updateMany.mock.invocationCallOrder[0]);
+    expect(tx.visitSession.updateMany.mock.invocationCallOrder[1])
+      .toBeLessThan(tx.networkCompanion.updateMany.mock.invocationCallOrder[0]);
+    expect(tx.visitSession.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          state: { in: ['active', 'ending'] },
+        }),
+        data: expect.objectContaining({
+          state: 'ended',
+          endReason: 'account_deletion_requested',
+          assetPackRefId: null,
+        }),
+      }),
+    );
+    expect(presence.disconnectUser).toHaveBeenCalledWith('user-1');
+    expect(events.publishToUser).toHaveBeenCalledWith(
+      'friend-1',
+      'visit.invitation.updated',
+      { invitationId: 'invitation-1' },
+    );
+    expect(events.publishToUser).toHaveBeenCalledWith(
+      'friend-1',
+      'visit.session.ended',
+      { sessionId: 'session-1', state: 'ended' },
+    );
     expect(tx.user.delete).not.toHaveBeenCalled();
   });
 
@@ -170,8 +244,8 @@ describe('Portal staged R2 deletion', () => {
         }),
       },
       deviceSession: { updateMany: jest.fn() },
-      visitSession: { deleteMany: jest.fn() },
-      visitInvitation: { deleteMany: jest.fn() },
+      visitSession: { deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitInvitation: { deleteMany: jest.fn(), updateMany: jest.fn() },
     };
     const storage = {
       limits: { uploadUrlTtlSeconds: 900 },
@@ -226,8 +300,8 @@ describe('Portal staged R2 deletion', () => {
         findMany: jest.fn(),
       },
       deviceSession: { updateMany: jest.fn() },
-      visitSession: { deleteMany: jest.fn() },
-      visitInvitation: { deleteMany: jest.fn() },
+      visitSession: { deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitInvitation: { deleteMany: jest.fn(), updateMany: jest.fn() },
     };
     const prisma = {
       user: {

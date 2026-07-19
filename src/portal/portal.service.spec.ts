@@ -1,4 +1,5 @@
 import { PortalService } from './portal.service';
+import * as bcrypt from 'bcryptjs';
 import { validate } from 'class-validator';
 import {
   PortalAccountDeleteDto,
@@ -138,9 +139,14 @@ describe('PortalService security projections', () => {
 
   it('revokes every other active device without touching another user or the current device', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 2 });
+    const findMany = jest.fn().mockResolvedValue([
+      { deviceId: 'device-a' },
+      { deviceId: 'device-b' },
+    ]);
+    const presence = { disconnectDevice: jest.fn().mockResolvedValue(undefined) };
     const service = new PortalService({
-      deviceSession: { updateMany },
-    } as never, {} as never, {} as never);
+      deviceSession: { findMany, updateMany },
+    } as never, {} as never, {} as never, presence as never);
 
     await expect(service.revokeOtherDevices(
       'user-1',
@@ -157,6 +163,68 @@ describe('PortalService security projections', () => {
         csrfTokenHash: null,
       },
     });
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-1',
+        deviceId: { not: 'current-device' },
+        revokedAt: expect.any(Date),
+      },
+      select: { deviceId: true },
+    });
+    expect(presence.disconnectDevice).toHaveBeenCalledWith(
+      'user-1',
+      'device-a',
+    );
+    expect(presence.disconnectDevice).toHaveBeenCalledWith(
+      'user-1',
+      'device-b',
+    );
+  });
+
+  it('disconnects every other device after changing the password', async () => {
+    const passwordHash = await bcrypt.hash('current-password', 4);
+    const presence = { disconnectDevice: jest.fn().mockResolvedValue(undefined) };
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ passwordHash }),
+        update: jest.fn().mockReturnValue('update-password'),
+      },
+      deviceSession: {
+        findMany: jest.fn().mockResolvedValue([
+          { deviceId: 'device-a' },
+          { deviceId: 'device-b' },
+        ]),
+        updateMany: jest.fn().mockReturnValue('revoke-sessions'),
+      },
+      $transaction: jest.fn().mockResolvedValue([{}, { count: 2 }]),
+    };
+    const service = new PortalService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      presence as never,
+    );
+
+    await expect(service.changePassword(
+      'user-1',
+      'current-device',
+      {
+        currentPassword: 'current-password',
+        newPassword: 'new-password-value',
+      },
+    )).resolves.toEqual({
+      changed: true,
+      otherDevicesRevoked: true,
+    });
+
+    expect(presence.disconnectDevice).toHaveBeenCalledWith(
+      'user-1',
+      'device-a',
+    );
+    expect(presence.disconnectDevice).toHaveBeenCalledWith(
+      'user-1',
+      'device-b',
+    );
   });
 
   it('lists only visits involving the signed-in user', async () => {
