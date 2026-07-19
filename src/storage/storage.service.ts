@@ -163,10 +163,19 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     this.requireAvailable();
     if (!objectKeys.length) return;
     try {
-      const result = await this.client!.send(new DeleteObjectsCommand({ Bucket: this.bucket!, Delete: { Objects: objectKeys.map(Key => ({ Key })), Quiet: true } }));
-      // S3-compatible APIs can report a successful request with per-object errors.
-      // Keep the lifecycle claim intact so the next cleanup pass retries safely.
-      if (result.Errors?.length) throw new Error('ASSET_STORAGE_DELETE_INCOMPLETE');
+      // DeleteObjects accepts at most 1,000 keys per request. A full asset pack can
+      // contain 1,000 files plus its manifest, so delete sequential idempotent
+      // batches and validate the embedded error list returned by every batch.
+      for (let offset = 0; offset < objectKeys.length; offset += 1_000) {
+        const batch = objectKeys.slice(offset, offset + 1_000);
+        const result = await this.client!.send(new DeleteObjectsCommand({
+          Bucket: this.bucket!,
+          Delete: { Objects: batch.map(Key => ({ Key })), Quiet: true },
+        }));
+        // S3-compatible APIs can report a successful request with per-object errors.
+        // Keep the lifecycle claim intact so the next cleanup pass retries safely.
+        if (result.Errors?.length) throw new Error('ASSET_STORAGE_DELETE_INCOMPLETE');
+      }
     }
     catch (error) { this.markUnavailable(); throw error; }
   }

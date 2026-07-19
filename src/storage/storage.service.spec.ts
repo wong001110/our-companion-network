@@ -26,6 +26,38 @@ describe('StorageService configuration', () => {
     expect(service.capability.uploadsEnabled).toBe(false);
   });
 
+  it('deletes 1,000 asset files plus their manifest in S3-compatible batches', async () => {
+    const service = new StorageService(config() as never);
+    (service as any)._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: true, downloadsEnabled: true };
+    const send = jest.fn().mockResolvedValue({});
+    (service as any).client = { send };
+    const files = Array.from({ length: 1_000 }, (_, index) => `packs/full/file-${index}.png`);
+    const objectKeys = [...files, 'packs/full/manifest.json'];
+
+    await expect(service.deleteObjects(objectKeys)).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([command]) => command.input.Delete.Objects.map(({ Key }: { Key: string }) => Key))).toEqual([
+      files,
+      ['packs/full/manifest.json'],
+    ]);
+  });
+
+  it('validates per-object errors returned by a later delete batch', async () => {
+    const service = new StorageService(config() as never);
+    (service as any)._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: true, downloadsEnabled: true };
+    const send = jest.fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Errors: [{ Code: 'InternalError' }] });
+    (service as any).client = { send };
+
+    await expect(service.deleteObjects(Array.from({ length: 1_001 }, (_, index) => `key-${index}`)))
+      .rejects.toThrow('ASSET_STORAGE_DELETE_INCOMPLETE');
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(service.capability.uploadsEnabled).toBe(false);
+  });
+
   it('lists a bounded object prefix across continuation pages', async () => {
     const service = new StorageService(config() as never);
     (service as any)._capability = { configured: true, provider: 'cloudflare_r2', uploadsEnabled: true, downloadsEnabled: true };
