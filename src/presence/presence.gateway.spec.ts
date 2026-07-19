@@ -368,4 +368,36 @@ describe('PresenceGateway multiple-device aggregation', () => {
     expect(presence.setOnline).toHaveBeenCalled();
     expect(presence.setOffline).not.toHaveBeenCalled();
   });
+
+  it('reconciles offline when disconnectUser races an aggregate online publish', async () => {
+    const { gateway, presence } = createGateway({ PRESENCE_IDLE_SECONDS: '3600' });
+    const device = socket('a') as any;
+    (gateway as any).server = {
+      sockets: { sockets: new Map([[device.id, device]]) },
+    };
+    await gateway.handleConnection(device);
+
+    let resolvePresence!: (value: { status: string; updatedAt: Date }) => void;
+    presence.setOnline.mockImplementationOnce(() =>
+      new Promise((resolve) => { resolvePresence = resolve; }));
+
+    await jest.advanceTimersByTimeAsync(15_000);
+    const publishing = gateway.handleActivity(device);
+    while (!resolvePresence) await Promise.resolve();
+    await gateway.disconnectUser('user-a');
+    resolvePresence({ status: 'online', updatedAt: now });
+    await publishing;
+
+    expect(device.disconnect).toHaveBeenCalledWith(true);
+    expect(gateway.isUserOnline('user-a')).toBe(false);
+    expect((gateway as any).userSockets.has('user-a')).toBe(false);
+    expect(presence.setOffline).toHaveBeenCalledWith('user-a');
+    expect(presence.setOffline).toHaveBeenLastCalledWith('user-a');
+    const lastOnline = Math.max(...presence.setOnline.mock.invocationCallOrder);
+    const lastOffline = Math.max(...presence.setOffline.mock.invocationCallOrder);
+    expect(lastOffline).toBeGreaterThan(lastOnline);
+    expect((gateway as any).activityTimers.has('user-a')).toBe(false);
+    expect((gateway as any).validationTimers.has(device.id)).toBe(false);
+    expect((gateway as any).offlineTimers.has('user-a')).toBe(false);
+  });
 });

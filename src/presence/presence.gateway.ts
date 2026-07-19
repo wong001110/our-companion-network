@@ -230,7 +230,9 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     if (now - (this.socketActivity.get(client.id) ?? 0) < 15_000) return;
     this.socketActivity.set(client.id, now);
     await this.publishAggregatePresence(userId);
-    this.scheduleIdleCheck(userId);
+    if ((this.userSockets.get(userId)?.size ?? 0) > 0) {
+      this.scheduleIdleCheck(userId);
+    }
   }
 
   async validateClientSession(client: Socket): Promise<string | undefined> {
@@ -347,18 +349,47 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     const nextEvaluationMs = Math.max(0, Math.min(...expiryTimes) - Date.now());
     const timer = setTimeout(() => {
       this.activityTimers.delete(userId);
-      void this.publishAggregatePresence(userId).then(() => this.scheduleIdleCheck(userId));
+      void this.publishAggregatePresence(userId).then(() => {
+        if ((this.userSockets.get(userId)?.size ?? 0) > 0) {
+          this.scheduleIdleCheck(userId);
+        }
+      });
     }, nextEvaluationMs);
     this.activityTimers.set(userId, timer);
   }
 
   private async publishAggregatePresence(userId: string): Promise<void> {
+    const generation = this.userRevocationGeneration.get(userId) ?? 0;
     if (!await this.revalidateUserSockets(userId)) return;
+    if (!this.isPresencePublicationCurrent(userId, generation)) return;
     const idleMs = Math.max(1, Number(this.config.get<string>('PRESENCE_IDLE_SECONDS', '300'))) * 1000;
     const sockets = this.userSockets.get(userId);
     if (!sockets?.size) return;
     const isAnyActive = [...sockets].some((socketId) => Date.now() - (this.socketActivity.get(socketId) ?? 0) < idleMs);
     await this.publishPresence(userId, isAnyActive ? 'online' : 'idle');
+    await this.reconcilePresencePublication(userId, generation);
+  }
+
+  /**
+   * Corrects a stale online/idle DB write that finished after disconnectUser()
+   * (or an equivalent revocation) already cleared sockets and published offline.
+   */
+  private async reconcilePresencePublication(
+    userId: string,
+    generation: number,
+  ): Promise<void> {
+    if (this.isPresencePublicationCurrent(userId, generation)) return;
+    if ((this.userSockets.get(userId)?.size ?? 0) > 0) return;
+    this.clearUserTimers(userId);
+    await this.publishPresence(userId, 'offline');
+  }
+
+  private isPresencePublicationCurrent(
+    userId: string,
+    generation: number,
+  ): boolean {
+    return (this.userRevocationGeneration.get(userId) ?? 0) === generation
+      && (this.userSockets.get(userId)?.size ?? 0) > 0;
   }
 
   private async publishPresence(userId: string, status: 'online' | 'idle' | 'offline'): Promise<void> {
