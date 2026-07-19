@@ -230,4 +230,176 @@ describe('FriendService S2 rules', () => {
     const service = new FriendService({ friendRequest: { findUnique: jest.fn().mockResolvedValue(request) } } as never, eventPublisher as never);
     await expect(service.cancelFriendRequest('user-b', request.id)).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  it('locks users before the request row and CAS-rejects a non-pending reject', async () => {
+    const request = {
+      id: 'request-1',
+      senderId: 'user-a',
+      receiverId: 'user-b',
+      status: 'pending',
+    };
+    const queryRaw = jest.fn();
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const tx = {
+      $queryRaw: queryRaw,
+      user: { count: jest.fn().mockResolvedValue(2) },
+      friendRequest: {
+        findUnique: jest.fn()
+          .mockResolvedValueOnce({ ...request, status: 'accepted' }),
+        updateMany,
+      },
+    };
+    const service = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx)),
+    } as never, eventPublisher as never);
+
+    await expect(service.rejectFriendRequest('user-b', request.id))
+      .rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'FRIEND_REQUEST_NOT_PENDING' }),
+      });
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(eventPublisher.publishToUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects with CAS and publishes only after a successful commit', async () => {
+    const request = {
+      id: 'request-1',
+      senderId: 'user-a',
+      receiverId: 'user-b',
+      status: 'pending',
+    };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { count: jest.fn().mockResolvedValue(2) },
+      friendRequest: {
+        findUnique: jest.fn().mockResolvedValue(request),
+        updateMany,
+      },
+    };
+    const service = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx)),
+    } as never, eventPublisher as never);
+
+    await expect(service.rejectFriendRequest('user-b', request.id))
+      .resolves.toEqual({ message: 'Friend request rejected' });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: request.id, status: 'pending' },
+      data: { status: 'rejected' },
+    });
+    expect(eventPublisher.publishToUser).toHaveBeenCalledWith(
+      'user-a',
+      'friend.request.updated',
+      { requestId: request.id, status: 'rejected' },
+    );
+  });
+
+  it('cancels with user locks, pending CAS, and post-commit events only', async () => {
+    const request = {
+      id: 'request-1',
+      senderId: 'user-a',
+      receiverId: 'user-b',
+      status: 'pending',
+    };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { count: jest.fn().mockResolvedValue(2) },
+      friendRequest: {
+        findUnique: jest.fn().mockResolvedValue(request),
+        updateMany,
+      },
+    };
+    let committed = false;
+    const service = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => {
+        const result = await operation(tx);
+        committed = true;
+        return result;
+      }),
+    } as never, eventPublisher as never);
+
+    await expect(service.cancelFriendRequest('user-a', request.id))
+      .resolves.toEqual({ message: 'Friend request cancelled' });
+    expect(committed).toBe(true);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: request.id, status: 'pending' },
+      data: { status: 'cancelled' },
+    });
+    expect(eventPublisher.publishToUser).toHaveBeenCalledWith(
+      'user-b',
+      'friend.request.updated',
+      { requestId: request.id, status: 'cancelled' },
+    );
+  });
+
+  it('forbids the wrong actor and rejects inactive participants for cancel', async () => {
+    const request = {
+      id: 'request-1',
+      senderId: 'user-a',
+      receiverId: 'user-b',
+      status: 'pending',
+    };
+    const forbidden = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+    } as never, eventPublisher as never);
+    await expect(forbidden.cancelFriendRequest('user-b', request.id))
+      .rejects.toBeInstanceOf(ForbiddenException);
+
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { count: jest.fn().mockResolvedValue(1) },
+      friendRequest: {
+        findUnique: jest.fn().mockResolvedValue(request),
+        updateMany: jest.fn(),
+      },
+    };
+    const inactive = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx)),
+    } as never, eventPublisher as never);
+    await expect(inactive.cancelFriendRequest('user-a', request.id))
+      .rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'USER_NOT_FOUND' }),
+      });
+    expect(tx.friendRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('returns a stable conflict when cancel races a non-pending request', async () => {
+    const request = {
+      id: 'request-1',
+      senderId: 'user-a',
+      receiverId: 'user-b',
+      status: 'pending',
+    };
+    const tx = {
+      $queryRaw: jest.fn(),
+      user: { count: jest.fn().mockResolvedValue(2) },
+      friendRequest: {
+        findUnique: jest.fn().mockResolvedValue({
+          ...request,
+          status: 'accepted',
+        }),
+        updateMany: jest.fn(),
+      },
+    };
+    const service = new FriendService({
+      friendRequest: { findUnique: jest.fn().mockResolvedValue(request) },
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx)),
+    } as never, eventPublisher as never);
+
+    await expect(service.cancelFriendRequest('user-a', request.id))
+      .rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'FRIEND_REQUEST_NOT_PENDING' }),
+      });
+    expect(eventPublisher.publishToUser).not.toHaveBeenCalled();
+  });
 });

@@ -16,6 +16,16 @@ import { SocialEventPublisher } from '../common/social-event-publisher.service';
 const RECONNECT_WINDOW_MS = 15 * 60_000;
 const MAX_RECONNECT_EVENTS = 10_000;
 
+interface PendingSocketConnection {
+  socketId: string;
+  userId: string;
+  deviceId: string;
+  invalidated: boolean;
+  userGeneration: number;
+  deviceGeneration: number;
+  socket: Socket;
+}
+
 @WebSocketGateway({
   cors: { origin: process.env.CORS_ORIGIN || 'http://localhost:3000', credentials: true },
 })
@@ -24,6 +34,9 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   server: Server;
 
   private readonly userSockets = new Map<string, Set<string>>();
+  private readonly pendingSockets = new Map<string, PendingSocketConnection>();
+  private readonly userRevocationGeneration = new Map<string, number>();
+  private readonly deviceRevocationGeneration = new Map<string, number>();
   private readonly offlineTimers = new Map<string, NodeJS.Timeout>();
   private readonly activityTimers = new Map<string, NodeJS.Timeout>();
   private readonly validationTimers = new Map<string, NodeJS.Timeout>();
@@ -43,27 +56,79 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   async handleConnection(client: Socket): Promise<void> {
-    const userId = await this.validateClientSession(client);
-    if (!userId || !this.isConnected(client)) return;
+    const userId = client.data.userId as string | undefined;
+    const deviceId = client.data.deviceId as string | undefined;
+    if (!userId || !deviceId) {
+      client.disconnect(true);
+      return;
+    }
+
+    const pending = this.registerPendingConnection(client, userId, deviceId);
+    const active = await this.isClientSessionActive(userId, deviceId);
+    if (!active) {
+      this.dropPendingConnection(client.id, true);
+      return;
+    }
+    if (!this.canPromotePendingConnection(client, pending)) {
+      this.dropPendingConnection(client.id, true);
+      return;
+    }
+
     const timer = this.offlineTimers.get(userId);
     if (timer) {
       clearTimeout(timer);
       this.offlineTimers.delete(userId);
       this.recordReconnect();
     }
+
+    if (!this.canPromotePendingConnection(client, pending)) {
+      this.dropPendingConnection(client.id, true);
+      return;
+    }
+
     const sockets = this.userSockets.get(userId) ?? new Set<string>();
     sockets.add(client.id);
     client.join(`user:${userId}`);
     this.socketActivity.set(client.id, Date.now());
     this.userSockets.set(userId, sockets);
+
+    if (!this.canPromotePendingConnection(client, pending)
+      || !this.userSockets.get(userId)?.has(client.id)) {
+      this.removeRegisteredSocket(userId, client.id);
+      this.dropPendingConnection(client.id, true);
+      await this.reconcilePresenceAfterAbort(userId);
+      return;
+    }
+
     await this.publishPresence(userId, 'online');
-    if (!this.isConnected(client)
-      || !this.userSockets.get(userId)?.has(client.id)) return;
+
+    if (!this.canPromotePendingConnection(client, pending)
+      || !this.userSockets.get(userId)?.has(client.id)) {
+      this.removeRegisteredSocket(userId, client.id);
+      this.dropPendingConnection(client.id, true);
+      await this.reconcilePresenceAfterAbort(userId);
+      return;
+    }
+
+    // Durable revalidation closes the window where revocation committed while
+    // setOnline was still in flight and overwrote the offline write.
+    const stillActive = await this.isClientSessionActive(userId, deviceId);
+    if (!stillActive
+      || !this.canPromotePendingConnection(client, pending)
+      || !this.userSockets.get(userId)?.has(client.id)) {
+      this.removeRegisteredSocket(userId, client.id);
+      this.dropPendingConnection(client.id, true);
+      await this.reconcilePresenceAfterAbort(userId);
+      return;
+    }
+
+    this.pendingSockets.delete(client.id);
     this.scheduleIdleCheck(userId);
     this.scheduleSessionValidation(client);
   }
 
   async handleDisconnect(client: Socket): Promise<void> {
+    this.pendingSockets.delete(client.id);
     const userId = client.data.userId as string | undefined;
     if (!userId) return;
     const sockets = this.userSockets.get(userId);
@@ -104,6 +169,14 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   async disconnectUser(userId: string): Promise<void> {
+    this.bumpUserRevocationGeneration(userId);
+    const pendingIds = [...this.pendingSockets.values()]
+      .filter((pending) => pending.userId === userId)
+      .map((pending) => pending.socketId);
+    for (const socketId of pendingIds) {
+      this.dropPendingConnection(socketId, true);
+    }
+
     const socketIds = [...(this.userSockets.get(userId) ?? [])];
     this.clearUserTimers(userId);
     this.userSockets.delete(userId);
@@ -118,6 +191,14 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   async disconnectDevice(userId: string, deviceId: string): Promise<void> {
+    this.bumpDeviceRevocationGeneration(userId, deviceId);
+    const pendingIds = [...this.pendingSockets.values()]
+      .filter((pending) => pending.userId === userId && pending.deviceId === deviceId)
+      .map((pending) => pending.socketId);
+    for (const socketId of pendingIds) {
+      this.dropPendingConnection(socketId, true);
+    }
+
     const sockets = [...(this.userSockets.get(userId) ?? [])];
     for (const socketId of sockets) {
       const socket = this.server?.sockets.sockets.get(socketId);
@@ -163,6 +244,96 @@ export class PresenceGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     if (!active) client.disconnect(true);
     if (!active || !this.isConnected(client)) return undefined;
     return userId;
+  }
+
+  private registerPendingConnection(
+    client: Socket,
+    userId: string,
+    deviceId: string,
+  ): PendingSocketConnection {
+    const pending: PendingSocketConnection = {
+      socketId: client.id,
+      userId,
+      deviceId,
+      invalidated: false,
+      userGeneration: this.userRevocationGeneration.get(userId) ?? 0,
+      deviceGeneration: this.deviceRevocationGeneration.get(
+        this.deviceRevocationKey(userId, deviceId),
+      ) ?? 0,
+      socket: client,
+    };
+    this.pendingSockets.set(client.id, pending);
+    return pending;
+  }
+
+  private canPromotePendingConnection(
+    client: Socket,
+    pending: PendingSocketConnection,
+  ): boolean {
+    const current = this.pendingSockets.get(client.id);
+    if (!current || current !== pending || current.invalidated) return false;
+    if (!this.isConnected(client)) return false;
+    if ((this.userRevocationGeneration.get(pending.userId) ?? 0)
+      !== pending.userGeneration) {
+      return false;
+    }
+    if ((this.deviceRevocationGeneration.get(
+      this.deviceRevocationKey(pending.userId, pending.deviceId),
+    ) ?? 0) !== pending.deviceGeneration) {
+      return false;
+    }
+    return true;
+  }
+
+  private dropPendingConnection(socketId: string, disconnect: boolean): void {
+    const pending = this.pendingSockets.get(socketId);
+    if (pending) {
+      pending.invalidated = true;
+      this.pendingSockets.delete(socketId);
+    }
+    if (!disconnect) return;
+    const socket = pending?.socket
+      ?? this.server?.sockets.sockets.get(socketId);
+    socket?.disconnect(true);
+  }
+
+  private removeRegisteredSocket(userId: string, socketId: string): void {
+    const sockets = this.userSockets.get(userId);
+    sockets?.delete(socketId);
+    if (sockets && sockets.size === 0) this.userSockets.delete(userId);
+    this.socketActivity.delete(socketId);
+    const timer = this.validationTimers.get(socketId);
+    if (timer) clearTimeout(timer);
+    this.validationTimers.delete(socketId);
+  }
+
+  private async reconcilePresenceAfterAbort(userId: string): Promise<void> {
+    if ((this.userSockets.get(userId)?.size ?? 0) > 0) {
+      await this.publishAggregatePresence(userId);
+      this.scheduleIdleCheck(userId);
+      return;
+    }
+    this.clearUserTimers(userId);
+    await this.publishPresence(userId, 'offline');
+  }
+
+  private bumpUserRevocationGeneration(userId: string): void {
+    this.userRevocationGeneration.set(
+      userId,
+      (this.userRevocationGeneration.get(userId) ?? 0) + 1,
+    );
+  }
+
+  private bumpDeviceRevocationGeneration(userId: string, deviceId: string): void {
+    const key = this.deviceRevocationKey(userId, deviceId);
+    this.deviceRevocationGeneration.set(
+      key,
+      (this.deviceRevocationGeneration.get(key) ?? 0) + 1,
+    );
+  }
+
+  private deviceRevocationKey(userId: string, deviceId: string): string {
+    return `${userId}:${deviceId}`;
   }
 
   private scheduleIdleCheck(userId: string): void {

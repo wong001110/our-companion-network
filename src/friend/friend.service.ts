@@ -290,14 +290,36 @@ export class FriendService {
     receiverId: string,
     requestId: string,
   ) {
+    const request = await this.finalizePendingFriendRequest(tx, {
+      requestId,
+      actorUserId: receiverId,
+      action: 'accept',
+    });
+    await tx.friendship.create({
+      data: { userId: request.senderId, friendId: request.receiverId },
+    });
+    await tx.friendship.create({
+      data: { userId: request.receiverId, friendId: request.senderId },
+    });
+    return request;
+  }
+
+  private async finalizePendingFriendRequest(
+    tx: any,
+    input: {
+      requestId: string;
+      actorUserId: string;
+      action: 'accept' | 'reject' | 'cancel';
+    },
+  ) {
     await tx.$queryRaw`
       SELECT "id"
       FROM "FriendRequest"
-      WHERE "id" = ${requestId}
+      WHERE "id" = ${input.requestId}
       FOR UPDATE
     `;
     const request = await tx.friendRequest.findUnique({
-      where: { id: requestId },
+      where: { id: input.requestId },
     });
     if (!request) {
       throw new NotFoundException({
@@ -305,7 +327,14 @@ export class FriendService {
         message: 'Friend request was not found',
       });
     }
-    if (request.receiverId !== receiverId) {
+    if (input.action === 'cancel') {
+      if (request.senderId !== input.actorUserId) {
+        throw new ForbiddenException({
+          code: 'SOCIAL_ACTION_NOT_ALLOWED',
+          message: 'Social action is not allowed',
+        });
+      }
+    } else if (request.receiverId !== input.actorUserId) {
       throw new ForbiddenException({
         code: 'SOCIAL_ACTION_NOT_ALLOWED',
         message: 'Social action is not allowed',
@@ -314,19 +343,27 @@ export class FriendService {
     if (request.status !== 'pending') {
       throw new ConflictException({
         code: 'FRIEND_REQUEST_NOT_PENDING',
-        message: 'Friend request is not pending',
+        message: 'Friend request is no longer pending',
       });
     }
-    await tx.friendRequest.update({
-      where: { id: requestId },
-      data: { status: 'accepted' },
+    const nextStatus = input.action === 'accept'
+      ? 'accepted'
+      : input.action === 'reject'
+        ? 'rejected'
+        : 'cancelled';
+    const changed = await tx.friendRequest.updateMany({
+      where: {
+        id: input.requestId,
+        status: 'pending',
+      },
+      data: { status: nextStatus },
     });
-    await tx.friendship.create({
-      data: { userId: request.senderId, friendId: request.receiverId },
-    });
-    await tx.friendship.create({
-      data: { userId: request.receiverId, friendId: request.senderId },
-    });
+    if (changed.count !== 1) {
+      throw new ConflictException({
+        code: 'FRIEND_REQUEST_NOT_PENDING',
+        message: 'Friend request is no longer pending',
+      });
+    }
     return request;
   }
 
@@ -352,38 +389,68 @@ export class FriendService {
   }
 
   async rejectFriendRequest(userId: string, requestId: string) {
-    const request = await this.prisma.friendRequest.findUnique({
+    const initial = await this.prisma.friendRequest.findUnique({
       where: { id: requestId },
     });
-
-    if (!request) {
+    if (!initial) {
       throw new NotFoundException({ code: 'FRIEND_REQUEST_NOT_FOUND', message: 'Friend request was not found' });
     }
-
-    if (request.receiverId !== userId) {
+    if (initial.receiverId !== userId) {
       throw new ForbiddenException({ code: 'SOCIAL_ACTION_NOT_ALLOWED', message: 'Social action is not allowed' });
     }
 
-    if (request.status !== 'pending') {
-      throw new ConflictException({ code: 'FRIEND_REQUEST_NOT_PENDING', message: 'Friend request is not pending' });
-    }
-
-    await this.prisma.friendRequest.update({
-      where: { id: requestId },
-      data: { status: 'rejected' },
+    const request = await this.prisma.$transaction(async tx => {
+      await this.lockActiveParticipants(
+        tx,
+        initial.senderId,
+        initial.receiverId,
+      );
+      return this.finalizePendingFriendRequest(tx, {
+        requestId,
+        actorUserId: userId,
+        action: 'reject',
+      });
     });
 
-    this.events.publishToUser(request.senderId, 'friend.request.updated', { requestId, status: 'rejected' });
-    this.events.publishToUser(request.receiverId, 'friend.request.updated', { requestId, status: 'rejected' });
+    this.events.publishToUser(request.senderId, 'friend.request.updated', {
+      requestId,
+      status: 'rejected',
+    });
+    this.events.publishToUser(request.receiverId, 'friend.request.updated', {
+      requestId,
+      status: 'rejected',
+    });
     return { message: 'Friend request rejected' };
   }
 
   async cancelFriendRequest(userId: string, requestId: string) {
-    const request = await this.prisma.friendRequest.findUnique({ where: { id: requestId } });
-    if (!request) throw new NotFoundException({ code: 'FRIEND_REQUEST_NOT_FOUND', message: 'Friend request was not found' });
-    if (request.senderId !== userId || request.status !== 'pending') throw new ForbiddenException({ code: 'SOCIAL_ACTION_NOT_ALLOWED', message: 'Social action is not allowed' });
-    await this.prisma.friendRequest.update({ where: { id: requestId }, data: { status: 'cancelled' } });
-    this.events.publishToUser(request.receiverId, 'friend.request.updated', { requestId, status: 'cancelled' });
+    const initial = await this.prisma.friendRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!initial) {
+      throw new NotFoundException({ code: 'FRIEND_REQUEST_NOT_FOUND', message: 'Friend request was not found' });
+    }
+    if (initial.senderId !== userId) {
+      throw new ForbiddenException({ code: 'SOCIAL_ACTION_NOT_ALLOWED', message: 'Social action is not allowed' });
+    }
+
+    const request = await this.prisma.$transaction(async tx => {
+      await this.lockActiveParticipants(
+        tx,
+        initial.senderId,
+        initial.receiverId,
+      );
+      return this.finalizePendingFriendRequest(tx, {
+        requestId,
+        actorUserId: userId,
+        action: 'cancel',
+      });
+    });
+
+    this.events.publishToUser(request.receiverId, 'friend.request.updated', {
+      requestId,
+      status: 'cancelled',
+    });
     return { message: 'Friend request cancelled' };
   }
 

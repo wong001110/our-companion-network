@@ -257,7 +257,115 @@ describe('PresenceGateway multiple-device aggregation', () => {
     await Promise.resolve();
     await jest.advanceTimersByTimeAsync(30_000);
 
-    expect(socketAuth.isSessionActive).toHaveBeenCalledTimes(2);
+    // connect validation + post-online reconciliation + one watchdog tick
+    expect(socketAuth.isSessionActive).toHaveBeenCalledTimes(3);
     expect(gateway.isUserOnline('user-a')).toBe(false);
+  });
+
+  it('disconnects a pending socket when the user is revoked during durable validation', async () => {
+    const { gateway, socketAuth, presence } = createGateway();
+    let resolveAuth!: (active: boolean) => void;
+    socketAuth.isSessionActive.mockImplementationOnce(() =>
+      new Promise<boolean>((resolve) => { resolveAuth = resolve; }));
+    const device = socket('a') as any;
+
+    const connecting = gateway.handleConnection(device);
+    while ((gateway as any).pendingSockets.size === 0) await Promise.resolve();
+    await gateway.disconnectUser('user-a');
+    resolveAuth(true);
+    await connecting;
+
+    expect(device.disconnect).toHaveBeenCalledWith(true);
+    expect(device.join).not.toHaveBeenCalled();
+    expect(gateway.isUserOnline('user-a')).toBe(false);
+    expect((gateway as any).userSockets.has('user-a')).toBe(false);
+    expect((gateway as any).pendingSockets.has(device.id)).toBe(false);
+    expect(presence.setOnline).not.toHaveBeenCalled();
+    expect((gateway as any).activityTimers.has('user-a')).toBe(false);
+    expect((gateway as any).validationTimers.has(device.id)).toBe(false);
+  });
+
+  it('disconnects only the revoked device while a pending peer remains eligible', async () => {
+    const { gateway, socketAuth, presence } = createGateway();
+    let resolveAuthA!: (active: boolean) => void;
+    let resolveAuthB!: (active: boolean) => void;
+    socketAuth.isSessionActive
+      .mockImplementationOnce(() =>
+        new Promise<boolean>((resolve) => { resolveAuthA = resolve; }))
+      .mockImplementationOnce(() =>
+        new Promise<boolean>((resolve) => { resolveAuthB = resolve; }))
+      .mockResolvedValue(true);
+    const deviceA = socket('a') as any;
+    const deviceB = socket('b') as any;
+    deviceA.data.deviceId = 'device-a';
+    deviceB.data.deviceId = 'device-b';
+
+    const connectingA = gateway.handleConnection(deviceA);
+    const connectingB = gateway.handleConnection(deviceB);
+    while ((gateway as any).pendingSockets.size < 2) await Promise.resolve();
+    await gateway.disconnectDevice('user-a', 'device-a');
+    resolveAuthA(true);
+    resolveAuthB(true);
+    await Promise.all([connectingA, connectingB]);
+
+    expect(deviceA.disconnect).toHaveBeenCalledWith(true);
+    expect(deviceA.join).not.toHaveBeenCalled();
+    expect(deviceB.disconnect).not.toHaveBeenCalled();
+    expect(deviceB.join).toHaveBeenCalledWith('user:user-a');
+    expect(gateway.isUserOnline('user-a')).toBe(true);
+    expect(presence.setOnline).toHaveBeenCalledWith('user-a');
+    expect(presence.setOffline).not.toHaveBeenCalled();
+  });
+
+  it('reconciles offline when revocation races an in-flight online publish', async () => {
+    const { gateway, presence, socketAuth } = createGateway();
+    let resolvePresence!: (value: { status: string; updatedAt: Date }) => void;
+    presence.setOnline.mockImplementationOnce(() =>
+      new Promise((resolve) => { resolvePresence = resolve; }));
+    const device = socket('a') as any;
+    (gateway as any).server = {
+      sockets: { sockets: new Map([[device.id, device]]) },
+    };
+
+    const connecting = gateway.handleConnection(device);
+    while (!resolvePresence) await Promise.resolve();
+    await gateway.disconnectUser('user-a');
+    resolvePresence({ status: 'online', updatedAt: now });
+    await connecting;
+
+    expect(device.disconnect).toHaveBeenCalledWith(true);
+    expect(gateway.isUserOnline('user-a')).toBe(false);
+    expect((gateway as any).userSockets.has('user-a')).toBe(false);
+    expect(presence.setOffline).toHaveBeenCalledWith('user-a');
+    expect((gateway as any).activityTimers.has('user-a')).toBe(false);
+    expect((gateway as any).validationTimers.has(device.id)).toBe(false);
+    expect(socketAuth.isSessionActive).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a second valid device online when only one device is revoked', async () => {
+    const { gateway, presence } = createGateway();
+    const deviceA = socket('a') as any;
+    const deviceB = socket('b') as any;
+    deviceA.data.deviceId = 'device-a';
+    deviceB.data.deviceId = 'device-b';
+    (gateway as any).server = {
+      sockets: {
+        sockets: new Map([
+          [deviceA.id, deviceA],
+          [deviceB.id, deviceB],
+        ]),
+      },
+    };
+    await gateway.handleConnection(deviceA);
+    await gateway.handleConnection(deviceB);
+
+    await gateway.disconnectDevice('user-a', 'device-a');
+    await gateway.handleDisconnect(deviceA);
+
+    expect(deviceA.disconnect).toHaveBeenCalledWith(true);
+    expect(deviceB.disconnect).not.toHaveBeenCalled();
+    expect(gateway.isUserOnline('user-a')).toBe(true);
+    expect(presence.setOnline).toHaveBeenCalled();
+    expect(presence.setOffline).not.toHaveBeenCalled();
   });
 });
