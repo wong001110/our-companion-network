@@ -24,6 +24,10 @@ describeIntegration('Social public UID PostgreSQL migration and constraints', ()
     join(process.cwd(), 'prisma/migrations/20260718000000_social_public_uid/migration.sql'),
     'utf8',
   );
+  const correctiveMigration = readFileSync(
+    join(process.cwd(), 'prisma/migrations/20260719000000_drop_legacy_identity_unique_indexes/migration.sql'),
+    'utf8',
+  );
 
   beforeAll(() => {
     runSql(`
@@ -35,9 +39,9 @@ describeIntegration('Social public UID PostgreSQL migration and constraints', ()
         "username" TEXT NOT NULL,
         "friendCode" TEXT NOT NULL
       );
-      ALTER TABLE "User" ADD CONSTRAINT "User_email_key" UNIQUE ("email");
-      ALTER TABLE "User" ADD CONSTRAINT "User_username_key" UNIQUE ("username");
-      ALTER TABLE "User" ADD CONSTRAINT "User_friendCode_key" UNIQUE ("friendCode");
+      CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+      CREATE UNIQUE INDEX "User_username_key" ON "User"("username");
+      CREATE UNIQUE INDEX "User_friendCode_key" ON "User"("friendCode");
       CREATE TABLE "Friendship" (
         "userId" TEXT NOT NULL,
         "friendId" TEXT NOT NULL,
@@ -48,6 +52,7 @@ describeIntegration('Social public UID PostgreSQL migration and constraints', ()
         ('user-b', 'alex.two@example.test', 'Blake', '8N5P73RW');
       INSERT INTO "Friendship" ("userId", "friendId") VALUES ('user-a', 'user-b');
       ${migration}
+      ${correctiveMigration}
     `);
   });
 
@@ -85,6 +90,20 @@ describeIntegration('Social public UID PostgreSQL migration and constraints', ()
       INSERT INTO "User" ("id", "uid", "email", "normalizedEmail", "username", "friendCode")
       VALUES ('email-copy', 'OC-3Q6R84TX', 'ALEX.THREE@example.test', 'alex.three@example.test', 'Other', '3Q6R84TX');
     `)).toThrow();
+  });
+
+  it('removes legacy identity indexes and leaves username lookup non-unique', () => {
+    const result = runSql(`
+      SELECT indexname || '|' || indexdef
+      FROM pg_indexes
+      WHERE schemaname = '${schema}'
+        AND indexname IN ('User_email_key', 'User_username_key', 'User_username_idx')
+      ORDER BY indexname;
+    `).trim();
+    expect(result).toContain('User_username_idx|CREATE INDEX');
+    expect(result).not.toContain('User_email_key');
+    expect(result).not.toContain('User_username_key');
+    expect(result).not.toContain('CREATE UNIQUE INDEX');
   });
 
   it('resolves the same account by either UID casing after normalization', () => {

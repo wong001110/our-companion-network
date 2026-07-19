@@ -6,6 +6,10 @@ describe('social public UID migration', () => {
     join(process.cwd(), 'prisma/migrations/20260718000000_social_public_uid/migration.sql'),
     'utf8',
   );
+  const correctiveSql = readFileSync(
+    join(process.cwd(), 'prisma/migrations/20260719000000_drop_legacy_identity_unique_indexes/migration.sql'),
+    'utf8',
+  );
 
   it('preflights normalized email collisions before adding constraints', () => {
     expect(sql).toContain('lower(trim("email"))');
@@ -24,5 +28,8 @@ describe('social public UID migration', () => {
     expect(sql).toContain('"User_normalizedEmail_key" UNIQUE ("normalizedEmail")');
     expect(sql).toContain('DROP CONSTRAINT IF EXISTS "User_username_key"');
     expect(sql).toContain('CREATE INDEX "User_username_idx"');
+    expect(correctiveSql).toContain('DROP INDEX IF EXISTS "User_email_key"');
+    expect(correctiveSql).toContain('DROP INDEX IF EXISTS "User_username_key"');
+    expect(correctiveSql).toContain('CREATE INDEX IF NOT EXISTS "User_username_idx"');
   });
 });
