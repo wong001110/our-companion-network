@@ -30,7 +30,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "admin:promote": "ts-node src/admin/admin-role.cli.ts promote",
-    "admin:demote": "ts-node src/admin/admin-role.cli.ts demote"
+    "admin:demote": "ts-node src/admin/admin-role.cli.ts demote",
+    "admin:setup-initial": "ts-node src/admin/initial-superadmin.cli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1085.0",

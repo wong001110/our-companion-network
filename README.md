@@ -206,6 +206,19 @@ npx prisma generate
 
 ### Manage Superadmins
 
+For a new local database, create the first Caretaker account explicitly:
+
+```bash
+npm run admin:setup-initial
+```
+
+The command creates the configured account when absent, or promotes the existing
+active account with the same email. It reads `INITIAL_SUPERADMIN_EMAIL`,
+`INITIAL_SUPERADMIN_USERNAME`, and `INITIAL_SUPERADMIN_PASSWORD` from the
+environment. Development defaults are listed in `.env.example`; production
+requires explicit strong values. Set `INITIAL_SUPERADMIN_RESET_PASSWORD=true`
+only when deliberately resetting an existing account password.
+
 Role changes are available only through the local CLI. The command displays the
 resolved account and requires its exact UID plus an audit reason.
 
