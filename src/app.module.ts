@@ -17,6 +17,7 @@ import { StorageModule } from './storage/storage.module';
 import { CompanionModule } from './companion/companion.module';
 import { SmokeModule } from './smoke/smoke.module';
 import { AdminModule } from './admin/admin.module';
+import { DeveloperDebugModule } from './developer-debug/developer-debug.module';
 import { BrowserCsrfGuard } from './common/guards/browser-csrf.guard';
 import { PortalModule } from './portal/portal.module';
 
@@ -36,6 +37,7 @@ import { PortalModule } from './portal/portal.module';
     CompanionModule,
     SmokeModule,
     AdminModule,
+    DeveloperDebugModule,
     PortalModule,
   ],
   providers: [

@@ -54,6 +54,7 @@ model User {
   visitInvitationsHosted VisitInvitation[] @relation("VisitInvitationHost")
   visitSessionsOwned VisitSession[] @relation("VisitSessionVisitorOwner")
   visitSessionsHosted VisitSession[] @relation("VisitSessionHost")
+  debugEvents       DeveloperDebugEvent[]
 
   @@index([username])
   @@index([role])
@@ -311,4 +312,34 @@ model AdminAuditLog {
   @@index([adminUserId, createdAt])
   @@index([targetType, targetId])
   @@index([createdAt, id])
+}
+
+model DeveloperDebugEvent {
+  id              String   @id @default(uuid())
+  clientEventId   String
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId        String
+  kind            String
+  operation       String?
+  status          String?
+  provider        String?
+  model           String?
+  companionId     String?
+  correlationId   String?
+  cycleId         String?
+  turnId          String?
+  summary         String?
+  payload         Json
+  errorCode       String?
+  clientCreatedAt DateTime
+  receivedAt      DateTime @default(now())
+  expiresAt       DateTime
+
+  @@unique([userId, clientEventId])
+  @@index([userId, receivedAt])
+  @@index([kind, receivedAt])
+  @@index([correlationId])
+  @@index([cycleId])
+  @@index([expiresAt])
 }

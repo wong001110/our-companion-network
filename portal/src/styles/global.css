@@ -170,6 +170,40 @@ svg { width: 1.15em; height: 1.15em; stroke-width: 1.8; flex: 0 0 auto; }
   .login-page { grid-template-columns: 1fr; }.login-story, .login-panel { min-height: auto; padding: 70px 32px; }.login-story { min-height: 620px; }.login-panel { min-height: 620px; }.login-brand { left: 32px; top: 28px; }
 }
 
+.debug-content {
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper-soft);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 0;
+}
+.debug-content-container {
+  max-height: 70vh;
+  overflow: auto;
+}
+.debug-event-row { gap: 10px; }
+.debug-event-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.debug-event-icon svg { width: 18px; height: 18px; }
+.debug-event-error { color: var(--rose); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debug-error-text { color: var(--rose); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; }
+.debug-related-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; }
+.debug-filters select { min-width: 140px; }
+.debug-filters input[type="date"] { min-width: 130px; }
+
 @media (max-width: 560px) {
   .main-content { padding: 26px 15px 64px; }
   h1 { font-size: 2.35rem; }

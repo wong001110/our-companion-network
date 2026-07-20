@@ -6,6 +6,7 @@ import {
   BookHeart,
   Boxes,
   BriefcaseBusiness,
+  Bug,
   Cat,
   CircleUserRound,
   Database,
@@ -45,6 +46,7 @@ const adminLinks = [
   { to: '/caretaker/realtime', label: 'Presence & Realtime', icon: Fingerprint },
   { to: '/caretaker/audit', label: 'Audit Log', icon: History },
   { to: '/caretaker/system', label: 'System Health', icon: Database },
+  { to: '/caretaker/debug', label: 'Developer Debug', icon: Bug },
 ];
 
 export function AppShell({ mode }: { mode: 'user' | 'admin' }) {

@@ -21,6 +21,7 @@ const AdminSystemPages = import('../pages/admin/AdminSystemPages');
 const AdminRealtimePage = lazy(() => AdminSystemPages.then((module) => ({ default: module.AdminRealtimePage })));
 const AdminAuditPage = lazy(() => AdminSystemPages.then((module) => ({ default: module.AdminAuditPage })));
 const AdminSystemPage = lazy(() => AdminSystemPages.then((module) => ({ default: module.AdminSystemPage })));
+const DeveloperDebugPage = lazy(() => import('../pages/admin/DeveloperDebugPage').then((module) => ({ default: module.DeveloperDebugPage })));
 
 export function App() {
   return (
@@ -52,6 +53,8 @@ export function App() {
             <Route path="realtime" element={<AdminRealtimePage />} />
             <Route path="audit" element={<AdminAuditPage />} />
             <Route path="system" element={<AdminSystemPage />} />
+            <Route path="debug" element={<DeveloperDebugPage />} />
+            <Route path="debug/:id" element={<DeveloperDebugPage />} />
           </Route>
         </Route>
       </Route>
