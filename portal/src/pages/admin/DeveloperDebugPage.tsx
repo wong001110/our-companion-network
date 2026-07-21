@@ -69,19 +69,14 @@ interface DebugEvent {
 }
 
 interface DebugEventDetail extends DebugEvent {
-  request?: Record<string, unknown>;
-  parsedResponse?: Record<string, unknown>;
-  rawResponse?: string;
-  extractedPageContent?: string;
-  searchMetadata?: Record<string, unknown>;
-  evidenceSynthesis?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
   relatedEvents?: DebugEvent[];
 }
 
 interface DebugEventsPage {
   items: DebugEvent[];
   nextCursor: string | null;
-  total: number;
+  hasMore: boolean;
 }
 
 const kindIcons: Record<string, typeof Zap> = {
@@ -104,13 +99,33 @@ const kindTones: Record<string, 'good' | 'warn' | 'bad' | 'purple' | 'neutral'> 
 
 interface Filters {
   search: string;
+  userId: string;
+  deviceId: string;
   kind: DebugEventKind | '';
+  operation: string;
   status: string;
-  dateFrom: string;
-  dateTo: string;
+  provider: string;
+  correlationId: string;
+  cycleId: string;
+  turnId: string;
+  from: string;
+  to: string;
 }
 
-const emptyFilters: Filters = { search: '', kind: '', status: '', dateFrom: '', dateTo: '' };
+const emptyFilters: Filters = {
+  search: '',
+  userId: '',
+  deviceId: '',
+  kind: '',
+  operation: '',
+  status: '',
+  provider: '',
+  correlationId: '',
+  cycleId: '',
+  turnId: '',
+  from: '',
+  to: '',
+};
 
 export function DeveloperDebugPage() {
   const { id } = useParams();
@@ -128,10 +143,17 @@ function EventList() {
       api<DebugEventsPage>(
         `/api/admin/developer/debug-events${queryString({
           search: filters.search || undefined,
+          userId: filters.userId || undefined,
+          deviceId: filters.deviceId || undefined,
           kind: filters.kind || undefined,
+          operation: filters.operation || undefined,
           status: filters.status || undefined,
-          dateFrom: filters.dateFrom || undefined,
-          dateTo: filters.dateTo || undefined,
+          provider: filters.provider || undefined,
+          correlationId: filters.correlationId || undefined,
+          cycleId: filters.cycleId || undefined,
+          turnId: filters.turnId || undefined,
+          from: filters.from || undefined,
+          to: filters.to || undefined,
           cursor: cursor || undefined,
           limit: 30,
         })}`,
@@ -195,7 +217,7 @@ function EventList() {
           <Button variant="quiet" disabled={history.length === 0} onClick={handlePrev}>
             <ChevronLeft /> Previous
           </Button>
-          <span>{query.data.total} events · cursor page {history.length + 1}</span>
+          <span>cursor page {history.length + 1}</span>
           <Button variant="quiet" disabled={!query.data.nextCursor} onClick={handleNext}>
             Next <ChevronRight />
           </Button>
@@ -312,56 +334,11 @@ function EventDetail({ id }: { id: string }) {
           </PaperCard>
 
           <div className="inspector-columns">
-            {event.request && (
+            {event.payload && (
               <PaperCard>
-                <div className="section-heading"><div><p className="eyebrow">Outbound</p><h2>Request</h2></div><Zap /></div>
+                <div className="section-heading"><div><p className="eyebrow">Payload</p><h2>Payload</h2></div><Zap /></div>
                 <div className="debug-content-container">
-                  <pre className="debug-content">{JSON.stringify(event.request, null, 2)}</pre>
-                </div>
-              </PaperCard>
-            )}
-            {event.parsedResponse && (
-              <PaperCard>
-                <div className="section-heading"><div><p className="eyebrow">Parsed</p><h2>Parsed response</h2></div><Bot /></div>
-                <div className="debug-content-container">
-                  <pre className="debug-content">{JSON.stringify(event.parsedResponse, null, 2)}</pre>
-                </div>
-              </PaperCard>
-            )}
-          </div>
-
-          {event.rawResponse && (
-            <PaperCard>
-              <div className="section-heading"><div><p className="eyebrow">Raw</p><h2>Raw response</h2></div><Webhook /></div>
-              <div className="debug-content-container">
-                <pre className="debug-content">{event.rawResponse}</pre>
-              </div>
-            </PaperCard>
-          )}
-
-          {event.extractedPageContent && (
-            <PaperCard>
-              <div className="section-heading"><div><p className="eyebrow">Extracted</p><h2>Extracted page content</h2></div><FileSearch /></div>
-              <div className="debug-content-container">
-                <pre className="debug-content">{event.extractedPageContent}</pre>
-              </div>
-            </PaperCard>
-          )}
-
-          <div className="inspector-columns">
-            {event.searchMetadata && (
-              <PaperCard>
-                <div className="section-heading"><div><p className="eyebrow">Search</p><h2>Search metadata</h2></div><SearchX /></div>
-                <div className="debug-content-container">
-                  <pre className="debug-content">{JSON.stringify(event.searchMetadata, null, 2)}</pre>
-                </div>
-              </PaperCard>
-            )}
-            {event.evidenceSynthesis && (
-              <PaperCard>
-                <div className="section-heading"><div><p className="eyebrow">Synthesis</p><h2>Evidence synthesis</h2></div><GitBranch /></div>
-                <div className="debug-content-container">
-                  <pre className="debug-content">{JSON.stringify(event.evidenceSynthesis, null, 2)}</pre>
+                  <pre className="debug-content">{JSON.stringify(event.payload, null, 2)}</pre>
                 </div>
               </PaperCard>
             )}
@@ -434,10 +411,38 @@ function DebugFilters({ value, onChange }: { value: Filters; onChange: (f: Filte
           ))}
         </select>
       </label>
-      <label><span>From</span><input type="date" value={draft.dateFrom} onChange={(e) => setDraft({ ...draft, dateFrom: e.target.value })} /></label>
-      <label><span>To</span><input type="date" value={draft.dateTo} onChange={(e) => setDraft({ ...draft, dateTo: e.target.value })} /></label>
+      <label>
+        <span className="sr-only">User ID</span>
+        <input value={draft.userId} placeholder="User ID" onChange={(e) => setDraft({ ...draft, userId: e.target.value })} />
+      </label>
+      <label>
+        <span className="sr-only">Device ID</span>
+        <input value={draft.deviceId} placeholder="Device ID" onChange={(e) => setDraft({ ...draft, deviceId: e.target.value })} />
+      </label>
+      <label>
+        <span className="sr-only">Operation</span>
+        <input value={draft.operation} placeholder="Operation" onChange={(e) => setDraft({ ...draft, operation: e.target.value })} />
+      </label>
+      <label>
+        <span className="sr-only">Provider</span>
+        <input value={draft.provider} placeholder="Provider" onChange={(e) => setDraft({ ...draft, provider: e.target.value })} />
+      </label>
+      <label>
+        <span className="sr-only">Correlation ID</span>
+        <input value={draft.correlationId} placeholder="Correlation ID" onChange={(e) => setDraft({ ...draft, correlationId: e.target.value })} />
+      </label>
+      <label>
+        <span className="sr-only">Cycle ID</span>
+        <input value={draft.cycleId} placeholder="Cycle ID" onChange={(e) => setDraft({ ...draft, cycleId: e.target.value })} />
+      </label>
+      <label>
+        <span className="sr-only">Turn ID</span>
+        <input value={draft.turnId} placeholder="Turn ID" onChange={(e) => setDraft({ ...draft, turnId: e.target.value })} />
+      </label>
+      <label><span>From</span><input type="date" value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} /></label>
+      <label><span>To</span><input type="date" value={draft.to} onChange={(e) => setDraft({ ...draft, to: e.target.value })} /></label>
       <Button type="submit" variant="secondary"><Filter /> Apply</Button>
-      {(value.search || value.kind || value.status || value.dateFrom || value.dateTo) && (
+      {(value.search || value.kind || value.status || value.from || value.to || value.userId || value.deviceId || value.operation || value.provider || value.correlationId || value.cycleId || value.turnId) && (
         <Button type="button" variant="quiet" onClick={() => { const empty = emptyFilters; setDraft(empty); onChange(empty); }}>Clear</Button>
       )}
     </form>
@@ -446,11 +451,8 @@ function DebugFilters({ value, onChange }: { value: Filters; onChange: (f: Filte
 
 function redactPayload(event: DebugEventDetail): DebugEventDetail {
   const redacted = { ...event };
-  if (redacted.request) {
-    redacted.request = redactObject(redacted.request);
-  }
-  if (redacted.parsedResponse) {
-    redacted.parsedResponse = redactObject(redacted.parsedResponse);
+  if (redacted.payload) {
+    redacted.payload = redactObject(redacted.payload);
   }
   return redacted;
 }

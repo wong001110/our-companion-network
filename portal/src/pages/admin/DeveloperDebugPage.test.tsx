@@ -13,6 +13,8 @@ vi.mock('../../lib/api', async (importOriginal) => {
 
 const apiMock = vi.mocked(api);
 
+const emptyListResponse = { items: [], nextCursor: null, hasMore: false };
+
 function renderPage(initialEntries = ['/caretaker/debug']) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -38,7 +40,7 @@ describe('DeveloperDebugPage', () => {
     expect(screen.getByRole('heading', { name: /debug events/i })).toBeInTheDocument();
   });
 
-  it('lists debug events from the API', async () => {
+  it('lists debug events from the API using createdAt', async () => {
     apiMock.mockResolvedValue({
       items: [
         {
@@ -57,7 +59,7 @@ describe('DeveloperDebugPage', () => {
         },
       ],
       nextCursor: null,
-      total: 1,
+      hasMore: false,
     });
     renderPage();
     expect(await screen.findByText('generate-response')).toBeInTheDocument();
@@ -66,9 +68,30 @@ describe('DeveloperDebugPage', () => {
     expect(screen.getByText(/openai.*gpt-4o/)).toBeInTheDocument();
   });
 
-  it('updates the query when filters change', async () => {
+  it('does not require total in the response', async () => {
+    apiMock.mockResolvedValue({
+      items: [
+        {
+          id: 'evt-1',
+          kind: 'ai_call',
+          operation: 'test',
+          status: 'success',
+          userId: 'user-1',
+          deviceId: 'dev-1',
+          createdAt: '2026-07-21T10:00:00.000Z',
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
+    renderPage();
+    expect(await screen.findByText('test')).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ events/)).not.toBeInTheDocument();
+  });
+
+  it('updates the query when filters change with backend field names', async () => {
     const user = userEvent.setup();
-    apiMock.mockResolvedValue({ items: [], nextCursor: null, total: 0 });
+    apiMock.mockResolvedValue(emptyListResponse);
     renderPage();
 
     const kindSelect = screen.getAllByRole('combobox')[0];
@@ -80,7 +103,24 @@ describe('DeveloperDebugPage', () => {
     );
   });
 
-  it('shows full detail content with scrollable container', async () => {
+  it('sends from/to instead of dateFrom/dateTo', async () => {
+    const user = userEvent.setup();
+    apiMock.mockResolvedValue(emptyListResponse);
+    renderPage();
+
+    const dateInputs = screen.getAllByRole('textbox').filter(
+      (el) => el.getAttribute('type') === 'date',
+    );
+    if (dateInputs.length > 0) {
+      await user.type(dateInputs[0], '2026-07-01');
+      await user.click(screen.getByRole('button', { name: /apply/i }));
+      expect(apiMock).toHaveBeenCalledWith(
+        expect.stringContaining('from='),
+      );
+    }
+  });
+
+  it('shows full detail content with scrollable container using payload', async () => {
     const largeContent = 'x'.repeat(5000);
     apiMock.mockResolvedValue({
       id: 'evt-1',
@@ -91,16 +131,33 @@ describe('DeveloperDebugPage', () => {
       username: 'alice',
       deviceId: 'dev-1',
       createdAt: '2026-07-21T10:00:00.000Z',
-      request: { prompt: 'hello' },
-      rawResponse: largeContent,
+      payload: { prompt: 'hello', response: largeContent },
     });
     renderPage(['/caretaker/debug/evt-1']);
 
-    expect(await screen.findByText('Request')).toBeInTheDocument();
-    expect(screen.getByText('Raw response')).toBeInTheDocument();
-    const pre = screen.getByText(largeContent);
+    expect(await screen.findByRole('heading', { name: 'Payload' })).toBeInTheDocument();
+    const pre = screen.getByText(/"prompt"/);
     expect(pre.closest('.debug-content-container')).toHaveClass('debug-content-container');
     expect(pre.closest('.debug-content')).toHaveClass('debug-content');
+  });
+
+  it('renders payload as escaped JSON without dangerouslySetInnerHTML', async () => {
+    apiMock.mockResolvedValue({
+      id: 'evt-1',
+      kind: 'ai_call',
+      operation: 'test',
+      status: 'success',
+      userId: 'user-1',
+      deviceId: 'dev-1',
+      createdAt: '2026-07-21T10:00:00.000Z',
+      payload: { key: '<script>alert("xss")</script>' },
+    });
+    renderPage(['/caretaker/debug/evt-1']);
+
+    await screen.findByRole('heading', { name: 'Payload' });
+    const pre = screen.getByText(/"key"/);
+    expect(pre.tagName).toBe('PRE');
+    expect(pre.textContent).toContain('<script>');
   });
 
   it('groups related events by correlationId', async () => {
@@ -155,7 +212,7 @@ describe('DeveloperDebugPage', () => {
       userId: 'user-1',
       deviceId: 'dev-1',
       createdAt: '2026-07-21T10:00:00.000Z',
-      request: { authorization: 'Bearer secret123', prompt: 'hello' },
+      payload: { authorization: 'Bearer secret123', prompt: 'hello' },
     });
     renderPage(['/caretaker/debug/evt-1']);
 
@@ -164,13 +221,51 @@ describe('DeveloperDebugPage', () => {
 
     expect(writeText).toHaveBeenCalled();
     const copied = JSON.parse(writeText.mock.calls[0][0] as string);
-    expect(copied.request.authorization).toBe('[REDACTED]');
-    expect(copied.request.prompt).toBe('hello');
+    expect(copied.payload.authorization).toBe('[REDACTED]');
+    expect(copied.payload.prompt).toBe('hello');
+  });
+
+  it('cleanup button calls DELETE /api/admin/developer/debug-events/expired', async () => {
+    const user = userEvent.setup();
+    apiMock.mockResolvedValueOnce(emptyListResponse);
+    apiMock.mockResolvedValueOnce({ pruned: 5 });
+    renderPage();
+
+    const cleanupButton = screen.getByRole('button', { name: /clean expired/i });
+    expect(cleanupButton).toBeInTheDocument();
+
+    await user.click(cleanupButton);
+    expect(apiMock).toHaveBeenCalledWith(
+      '/api/admin/developer/debug-events/expired',
+      { method: 'DELETE' },
+    );
   });
 
   it('does not show expired events (filtered by API)', async () => {
-    apiMock.mockResolvedValue({ items: [], nextCursor: null, total: 0 });
+    apiMock.mockResolvedValue(emptyListResponse);
     renderPage();
     expect(await screen.findByText(/no debug events match/i)).toBeInTheDocument();
+  });
+
+  it('long content remains scrollable in detail view', async () => {
+    const largeContent = 'x'.repeat(10000);
+    apiMock.mockResolvedValue({
+      id: 'evt-1',
+      kind: 'ai_call',
+      operation: 'generate-response',
+      status: 'success',
+      userId: 'user-1',
+      deviceId: 'dev-1',
+      createdAt: '2026-07-21T10:00:00.000Z',
+      payload: { content: largeContent },
+    });
+    renderPage(['/caretaker/debug/evt-1']);
+
+    await screen.findByRole('heading', { name: 'Payload' });
+    const container = document.querySelector('.debug-content-container');
+    expect(container).toBeInTheDocument();
+    expect(container).toHaveClass('debug-content-container');
+    expect(container!.querySelector('pre.debug-content')).toBeInTheDocument();
+    expect(container!.querySelector('pre.debug-content')!.textContent!.length).toBeGreaterThan(5000);
   });
 });

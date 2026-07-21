@@ -79,13 +79,18 @@ export class DeveloperDebugController {
 
   @Get('admin/developer/debug-events/:id')
   @UseGuards(SuperadminGuard)
-  getEvent(@Param('id', ParseUUIDPipe) id: string) {
-    return this.debugService.getEvent(id);
+  getEvent(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: UserPayload,
+  ) {
+    return this.debugService.getEvent(id, user.id);
   }
 
-  @Delete('admin/developer-debug-events/expired')
+  @Delete('admin/developer/debug-events/expired')
   @UseGuards(SuperadminGuard)
-  pruneExpired() {
-    return this.debugService.pruneExpired();
+  async deleteExpired(@CurrentUser() user: UserPayload) {
+    const result = await this.debugService.pruneExpired();
+    await this.debugService.recordExpiredDeleteAudit(user.id, result.pruned);
+    return result;
   }
 }

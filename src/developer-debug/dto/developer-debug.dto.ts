@@ -21,11 +21,6 @@ export class BatchIngestEventDto {
 
   @IsString()
   @IsNotEmpty()
-  @MaxLength(128)
-  deviceId: string;
-
-  @IsString()
-  @IsNotEmpty()
   @MaxLength(64)
   kind: string;
 
@@ -101,6 +96,11 @@ export enum DebugEventSortField {
 export class AdminDebugEventQueryDto {
   @IsOptional()
   @IsString()
+  @MaxLength(256)
+  search?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(128)
   cursor?: string;
 
@@ -118,8 +118,28 @@ export class AdminDebugEventQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(128)
+  deviceId?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(64)
   kind?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  operation?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  status?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  provider?: string;
 
   @IsOptional()
   @IsString()
@@ -130,6 +150,11 @@ export class AdminDebugEventQueryDto {
   @IsString()
   @MaxLength(128)
   cycleId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  turnId?: string;
 
   @IsOptional()
   @IsDateString()
