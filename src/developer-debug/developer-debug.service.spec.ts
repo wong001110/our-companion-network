@@ -1,4 +1,3 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DeveloperDebugService } from './developer-debug.service';
 
 describe('DeveloperDebugService', () => {
@@ -161,6 +160,210 @@ describe('DeveloperDebugService', () => {
       expect(result.expiresAt.getTime()).toBeGreaterThanOrEqual(expectedMin);
       expect(result.expiresAt.getTime()).toBeLessThanOrEqual(expectedMax);
     });
+
+    it('sanitizes errorMessage and persists it', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: 'Connection failed',
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toBe('Connection failed');
+      expect(upsertCall.update.errorMessage).toBe('Connection failed');
+    });
+
+    it('returns undefined errorMessage when not provided', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toBeUndefined();
+    });
+  });
+
+  describe('sanitizeErrorMessage', () => {
+    it('redacts Bearer tokens in error messages', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: 'Request failed with Bearer sk-abc123secret',
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toBe('Request failed with Bearer [REDACTED]');
+    });
+
+    it('redacts Authorization headers in error messages', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: 'Header Authorization: Bearer token123 was invalid',
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toContain('[REDACTED]');
+      expect(upsertCall.create.errorMessage).not.toContain('token123');
+    });
+
+    it('redacts Cookie values in error messages', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: 'Missing Cookie: session=abc123',
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toBe('Missing Cookie: [REDACTED]');
+    });
+
+    it('redacts refreshToken in error messages', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: 'Token expired: refreshToken=abc123refresh',
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toBe('Token expired: refreshToken=[REDACTED]');
+    });
+
+    it('redacts apiKey in error messages', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: 'Invalid apiKey=sk-abc123',
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toBe('Invalid apiKey=[REDACTED]');
+    });
+
+    it('truncates errorMessage to 1000 chars', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      const longMessage = 'x'.repeat(1500);
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: {},
+          errorMessage: longMessage,
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.errorMessage).toHaveLength(1000);
+    });
   });
 
   describe('listEvents', () => {
@@ -305,6 +508,57 @@ describe('DeveloperDebugService', () => {
       expect(result).toHaveProperty('nextCursor');
       expect(result).toHaveProperty('hasMore');
     });
+
+    it('includes errorMessage in list items', async () => {
+      const findMany = jest.fn().mockResolvedValue([
+        { id: 'evt-1', kind: 'test', errorMessage: 'Connection timeout', user: { username: 'alice' }, clientCreatedAt: new Date(), receivedAt: new Date(), expiresAt: new Date() },
+      ]);
+      const prisma = {
+        developerDebugEvent: { findMany, deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        $transaction: jest.fn(async (fn: unknown) =>
+          (fn as (c: unknown) => unknown)(prisma),
+        ),
+      } as never;
+      const service = new DeveloperDebugService(prisma, { record: jest.fn() } as never);
+
+      const result = await service.listEvents({
+        limit: 10,
+        sortBy: 'receivedAt',
+        sortDir: 'desc',
+      } as never);
+
+      expect(result.items[0].errorMessage).toBe('Connection timeout');
+    });
+
+    it('searches across operation, cycleId, and errorMessage', async () => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      const prisma = {
+        developerDebugEvent: { findMany, deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        $transaction: jest.fn(async (fn: unknown) =>
+          (fn as (c: unknown) => unknown)(prisma),
+        ),
+      } as never;
+      const service = new DeveloperDebugService(prisma, { record: jest.fn() } as never);
+
+      await service.listEvents({
+        limit: 50,
+        search: 'timeout',
+        sortBy: 'receivedAt',
+        sortDir: 'desc',
+      } as never);
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: expect.arrayContaining([
+              expect.objectContaining({ operation: expect.objectContaining({ contains: 'timeout' }) }),
+              expect.objectContaining({ cycleId: expect.objectContaining({ contains: 'timeout' }) }),
+              expect.objectContaining({ errorMessage: expect.objectContaining({ contains: 'timeout' }) }),
+            ]),
+          }),
+        }),
+      );
+    });
   });
 
   describe('getEvent', () => {
@@ -315,7 +569,7 @@ describe('DeveloperDebugService', () => {
         expiresAt: new Date(Date.now() + 86400000),
       });
       const { service } = createService({
-        developerDebugEvent: { findUnique },
+        developerDebugEvent: { findUnique, findMany: jest.fn().mockResolvedValue([]) },
       });
 
       const result = await service.getEvent('evt-1');
@@ -355,8 +609,9 @@ describe('DeveloperDebugService', () => {
         userId: 'user-1',
         expiresAt: new Date(Date.now() + 86400000),
       });
+      const findMany = jest.fn().mockResolvedValue([]);
       const { service, auditService } = createService({
-        developerDebugEvent: { findUnique },
+        developerDebugEvent: { findUnique, findMany },
       });
 
       await service.getEvent('evt-1', 'admin-1');
@@ -368,6 +623,256 @@ describe('DeveloperDebugService', () => {
           targetId: 'evt-1',
         }),
       );
+    });
+
+    it('returns relatedEvents with same correlationId', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        operation: 'chat',
+        status: 'success',
+        summary: 'Main request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const related = [
+        {
+          id: 'evt-2',
+          kind: 'llm_request',
+          operation: 'retry',
+          status: 'success',
+          summary: 'Retry',
+          clientCreatedAt: new Date('2026-07-21T09:59:00Z'),
+          errorMessage: null,
+        },
+      ];
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue(related);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      expect(result.relatedEvents).toHaveLength(2);
+      expect(result.relatedEvents[0].id).toBe('evt-2');
+      expect(result.relatedEvents[1].id).toBe('evt-1');
+    });
+
+    it('excludes related events with different userId', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date(),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      await service.getEvent('evt-1');
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            userId: 'user-1',
+          }),
+        }),
+      );
+    });
+
+    it('excludes expired related events', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date(),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      await service.getEvent('evt-1');
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            expiresAt: { gt: expect.any(Date) },
+          }),
+        }),
+      );
+    });
+
+    it('falls back to cycleId when no correlationId', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: null,
+        cycleId: 'cycle-1',
+        clientCreatedAt: new Date(),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      await service.getEvent('evt-1');
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            cycleId: 'cycle-1',
+          }),
+        }),
+      );
+    });
+
+    it('orders related events by clientCreatedAt ascending', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      await service.getEvent('evt-1');
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: { clientCreatedAt: 'asc' },
+        }),
+      );
+    });
+
+    it('limits related events to 200', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date(),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      await service.getEvent('evt-1');
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 200,
+        }),
+      );
+    });
+
+    it('returns errorMessage in related events', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        errorMessage: 'Main error',
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const related = [
+        {
+          id: 'evt-2',
+          kind: 'llm_request',
+          operation: 'retry',
+          status: 'success',
+          summary: 'Retry',
+          clientCreatedAt: new Date('2026-07-21T09:59:00Z'),
+          errorMessage: 'Retry error',
+        },
+      ];
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue(related);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      expect(result.relatedEvents[0].errorMessage).toBe('Retry error');
+      expect(result.relatedEvents[1].errorMessage).toBe('Main error');
+    });
+
+    it('includes current event in relatedEvents', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        operation: 'chat',
+        status: 'success',
+        summary: 'Main',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      const currentInRelated = result.relatedEvents.find((e: { id: string }) => e.id === 'evt-1') as { id: string; kind: string };
+      expect(currentInRelated).toBeDefined();
+      expect(currentInRelated.kind).toBe('llm_request');
+    });
+
+    it('returns empty relatedEvents when no correlationId or cycleId', async () => {
+      const event = {
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: null,
+        cycleId: null,
+        clientCreatedAt: new Date(),
+        errorMessage: null,
+        expiresAt: new Date(Date.now() + 86400000),
+      };
+      const findUnique = jest.fn().mockResolvedValue(event);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      expect(result.relatedEvents).toHaveLength(1);
+      expect(result.relatedEvents[0].id).toBe('evt-1');
+      expect(findMany).not.toHaveBeenCalled();
     });
   });
 

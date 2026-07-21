@@ -332,6 +332,7 @@ model DeveloperDebugEvent {
   summary         String?
   payload         Json
   errorCode       String?
+  errorMessage    String?
   clientCreatedAt DateTime
   receivedAt      DateTime @default(now())
   expiresAt       DateTime

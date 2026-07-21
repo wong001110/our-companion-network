@@ -49,7 +49,7 @@ const KIND_OPTIONS: Array<{ value: DebugEventKind | ''; label: string }> = [
   { value: 'pipeline_failure', label: 'Pipeline Failure' },
 ];
 
-const STATUS_OPTIONS = ['', 'success', 'error', 'pending'];
+const STATUS_OPTIONS = ['', 'success', 'error', 'completed', 'failed', 'fallback', 'empty', 'skipped', 'pending'];
 
 interface DebugEvent {
   id: string;
@@ -64,8 +64,11 @@ interface DebugEvent {
   correlationId?: string;
   cycleId?: string;
   turnId?: string;
-  error?: string;
+  summary?: string;
+  errorMessage?: string;
   createdAt: string;
+  receivedAt?: string;
+  expiresAt?: string;
 }
 
 interface DebugEventDetail extends DebugEvent {
@@ -251,7 +254,7 @@ function EventRow({ event }: { event: DebugEvent }) {
       </Stamp>
       {event.provider && <small>{event.provider}/{event.model}</small>}
       {event.correlationId && <small title={event.correlationId}>CID {shortId(event.correlationId)}</small>}
-      {event.error && <small className="debug-event-error">{event.error.slice(0, 80)}</small>}
+      {event.errorMessage && <small className="debug-event-error">{event.errorMessage.slice(0, 80)}</small>}
       <Link className="button button--quiet" to={`/caretaker/debug/${event.id}`}>Inspect</Link>
     </PaperCard>
   );
@@ -278,13 +281,13 @@ function EventDetail({ id }: { id: string }) {
 
   const copyJson = useCallback(() => {
     if (!event) return;
-    const text = JSON.stringify(redactPayload(event), null, 2);
+    const text = JSON.stringify(event, null, 2);
     void navigator.clipboard.writeText(text);
   }, [event]);
 
   const downloadRedacted = useCallback(() => {
     if (!event) return;
-    const text = JSON.stringify(redactPayload(event), null, 2);
+    const text = JSON.stringify(event, null, 2);
     const blob = new Blob([text], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -329,7 +332,9 @@ function EventDetail({ id }: { id: string }) {
               {event.correlationId && <div><dt>Correlation ID</dt><dd><code>{event.correlationId}</code></dd></div>}
               {event.cycleId && <div><dt>Cycle ID</dt><dd><code>{event.cycleId}</code></dd></div>}
               {event.turnId && <div><dt>Turn ID</dt><dd><code>{event.turnId}</code></dd></div>}
-              {event.error && <div><dt>Error</dt><dd className="debug-error-text">{event.error}</dd></div>}
+              {event.errorMessage && <div><dt>Error</dt><dd className="debug-error-text">{event.errorMessage}</dd></div>}
+              {event.receivedAt && <div><dt>Received at</dt><dd>{formatDate(event.receivedAt)}</dd></div>}
+              {event.expiresAt && <div><dt>Expires at</dt><dd>{formatDate(event.expiresAt)}</dd></div>}
             </dl>
           </PaperCard>
 
@@ -348,11 +353,18 @@ function EventDetail({ id }: { id: string }) {
             <PaperCard>
               <div className="section-heading"><div><p className="eyebrow">Related</p><h2>Related event timeline</h2></div><GitCommitHorizontal /></div>
               <div className="compact-list">
-                {event.relatedEvents.map((related) => (
-                  <div key={related.id}>
+                {event.relatedEvents
+                  .slice()
+                  .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                  .map((related) => (
+                  <div key={related.id} className={related.id === id ? 'highlight-current' : undefined}>
                     <span>
                       <strong>{related.operation || related.kind}</strong>
-                      <small>{formatDate(related.createdAt)} · {sentenceCase(related.kind)} · {sentenceCase(related.status)}</small>
+                      <small>
+                        {formatDate(related.createdAt)} · {sentenceCase(related.kind)} · {sentenceCase(related.status)}
+                        {related.summary && ` · ${related.summary}`}
+                        {related.errorMessage && ` · ${related.errorMessage.slice(0, 80)}`}
+                      </small>
                     </span>
                     <Link
                       className="button button--quiet"
@@ -390,7 +402,7 @@ function DebugFilters({ value, onChange }: { value: Filters; onChange: (f: Filte
         <Filter aria-hidden="true" />
         <input
           value={draft.search}
-          placeholder="Operation, user, correlation ID"
+          placeholder="Search summary, operation, correlation, cycle, error..."
           onChange={(e) => setDraft({ ...draft, search: e.target.value })}
         />
       </label>
@@ -449,24 +461,4 @@ function DebugFilters({ value, onChange }: { value: Filters; onChange: (f: Filte
   );
 }
 
-function redactPayload(event: DebugEventDetail): DebugEventDetail {
-  const redacted = { ...event };
-  if (redacted.payload) {
-    redacted.payload = redactObject(redacted.payload);
-  }
-  return redacted;
-}
 
-function redactObject(obj: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (typeof value === 'string' && /(token|key|secret|password|authorization)/i.test(key)) {
-      result[key] = '[REDACTED]';
-    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result[key] = redactObject(value as Record<string, unknown>);
-    } else {
-      result[key] = value;
-    }
-  }
-  return result;
-}

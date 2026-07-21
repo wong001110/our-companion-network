@@ -103,6 +103,31 @@ describe('DeveloperDebugPage', () => {
     );
   });
 
+  it('search placeholder reflects real backend fields', async () => {
+    apiMock.mockResolvedValue(emptyListResponse);
+    renderPage();
+
+    const searchInput = screen.getByPlaceholderText(/search summary, operation, correlation/i);
+    expect(searchInput).toBeInTheDocument();
+  });
+
+  it('shows errorMessage field in detail view', async () => {
+    apiMock.mockResolvedValue({
+      id: 'evt-1',
+      kind: 'ai_call',
+      operation: 'generate-response',
+      status: 'error',
+      userId: 'user-1',
+      deviceId: 'dev-1',
+      createdAt: '2026-07-21T10:00:00.000Z',
+      errorMessage: 'Rate limit exceeded',
+    });
+    renderPage(['/caretaker/debug/evt-1']);
+
+    expect(await screen.findByText('Rate limit exceeded')).toBeInTheDocument();
+    expect(screen.getByText('Rate limit exceeded').closest('.debug-error-text')).toBeInTheDocument();
+  });
+
   it('sends from/to instead of dateFrom/dateTo', async () => {
     const user = userEvent.setup();
     apiMock.mockResolvedValue(emptyListResponse);
@@ -199,7 +224,54 @@ describe('DeveloperDebugPage', () => {
     expect(screen.getByText('Current')).toBeInTheDocument();
   });
 
-  it('copy and download use redacted payload', async () => {
+  it('sorts related events by createdAt ascending and highlights current event', async () => {
+    apiMock.mockResolvedValue({
+      id: 'evt-2',
+      kind: 'research_search',
+      operation: 'web-search',
+      status: 'success',
+      userId: 'user-1',
+      deviceId: 'dev-1',
+      createdAt: '2026-07-21T10:00:01.000Z',
+      relatedEvents: [
+        {
+          id: 'evt-3',
+          kind: 'evidence_synthesis',
+          operation: 'synthesize',
+          status: 'success',
+          userId: 'user-1',
+          deviceId: 'dev-1',
+          createdAt: '2026-07-21T10:00:02.000Z',
+        },
+        {
+          id: 'evt-2',
+          kind: 'research_search',
+          operation: 'web-search',
+          status: 'success',
+          userId: 'user-1',
+          deviceId: 'dev-1',
+          createdAt: '2026-07-21T10:00:01.000Z',
+        },
+        {
+          id: 'evt-1',
+          kind: 'ai_call',
+          operation: 'generate-response',
+          status: 'success',
+          userId: 'user-1',
+          deviceId: 'dev-1',
+          createdAt: '2026-07-21T10:00:00.000Z',
+        },
+      ],
+    });
+    renderPage(['/caretaker/debug/evt-2']);
+
+    expect(await screen.findByText('Related event timeline')).toBeInTheDocument();
+    const currentBtn = screen.getByText('Current');
+    const parentDiv = currentBtn.closest('div.highlight-current');
+    expect(parentDiv).toBeInTheDocument();
+  });
+
+  it('copy and download use redacted payload from backend', async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
@@ -212,7 +284,7 @@ describe('DeveloperDebugPage', () => {
       userId: 'user-1',
       deviceId: 'dev-1',
       createdAt: '2026-07-21T10:00:00.000Z',
-      payload: { authorization: 'Bearer secret123', prompt: 'hello' },
+      payload: { authorization: '[REDACTED]', prompt: 'hello' },
     });
     renderPage(['/caretaker/debug/evt-1']);
 

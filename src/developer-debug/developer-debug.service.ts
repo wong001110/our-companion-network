@@ -15,7 +15,6 @@ import {
 
 const RETENTION_DAYS = 14;
 const MAX_BATCH_SIZE = 50;
-const MAX_PAYLOAD_BYTES = 64 * 1024;
 const BOUNDED_PRUNE_LIMIT = 100;
 
 const SENSITIVE_KEYS = new Set([
@@ -101,6 +100,7 @@ export class DeveloperDebugService {
             summary: event.summary,
             payload: redactedPayload as Prisma.InputJsonValue,
             errorCode: event.errorCode,
+            errorMessage: this.sanitizeErrorMessage(event.errorMessage),
             clientCreatedAt: new Date(event.clientCreatedAt),
             receivedAt: now,
             expiresAt,
@@ -119,6 +119,7 @@ export class DeveloperDebugService {
             summary: event.summary,
             payload: redactedPayload as Prisma.InputJsonValue,
             errorCode: event.errorCode,
+            errorMessage: this.sanitizeErrorMessage(event.errorMessage),
           },
         });
       }),
@@ -146,8 +147,11 @@ export class DeveloperDebugService {
     if (filters.search) {
       where.OR = [
         { summary: { contains: filters.search, mode: 'insensitive' } },
+        { operation: { contains: filters.search, mode: 'insensitive' } },
         { correlationId: { contains: filters.search, mode: 'insensitive' } },
+        { cycleId: { contains: filters.search, mode: 'insensitive' } },
         { errorCode: { contains: filters.search, mode: 'insensitive' } },
+        { errorMessage: { contains: filters.search, mode: 'insensitive' } },
       ];
     }
     if (filters.userId) where.userId = filters.userId;
@@ -179,7 +183,7 @@ export class DeveloperDebugService {
       ? { id: filters.cursor }
       : undefined;
 
-    const [rows, total] = await this.prisma.$transaction(async (tx) => {
+    const rows = await this.prisma.$transaction(async (tx) => {
       const r = await tx.developerDebugEvent.findMany({
         where,
         orderBy,
@@ -200,13 +204,14 @@ export class DeveloperDebugService {
           cycleId: true,
           turnId: true,
           errorCode: true,
+          errorMessage: true,
           clientCreatedAt: true,
           receivedAt: true,
           expiresAt: true,
         },
       });
 
-      return [r, r.length] as const;
+      return r;
     });
 
     const hasMore = rows.length > limit;
@@ -227,6 +232,7 @@ export class DeveloperDebugService {
       cycleId: row.cycleId,
       turnId: row.turnId,
       errorCode: row.errorCode,
+      errorMessage: row.errorMessage,
       createdAt: row.clientCreatedAt.toISOString(),
       receivedAt: row.receivedAt.toISOString(),
       expiresAt: row.expiresAt.toISOString(),
@@ -272,7 +278,51 @@ export class DeveloperDebugService {
       });
     }
 
-    return event;
+    const now = new Date();
+    const relatedWhere: Prisma.DeveloperDebugEventWhereInput = {
+      userId: event.userId,
+      expiresAt: { gt: now },
+      id: { not: id },
+      ...(event.correlationId
+        ? { correlationId: event.correlationId }
+        : event.cycleId
+          ? { cycleId: event.cycleId }
+          : {}),
+    };
+
+    const relatedEvents = event.correlationId || event.cycleId
+      ? await this.prisma.developerDebugEvent.findMany({
+          where: relatedWhere,
+          select: {
+            id: true,
+            kind: true,
+            operation: true,
+            status: true,
+            summary: true,
+            clientCreatedAt: true,
+            errorMessage: true,
+          },
+          orderBy: { clientCreatedAt: 'asc' },
+          take: 200,
+        })
+      : [];
+
+    const currentEvent = {
+      id: event.id,
+      kind: event.kind,
+      operation: event.operation,
+      status: event.status,
+      summary: event.summary,
+      clientCreatedAt: event.clientCreatedAt,
+      errorMessage: event.errorMessage,
+    };
+
+    return {
+      ...event,
+      relatedEvents: [currentEvent, ...relatedEvents].sort(
+        (a, b) => a.clientCreatedAt.getTime() - b.clientCreatedAt.getTime(),
+      ),
+    };
   }
 
   async pruneExpired() {
@@ -332,6 +382,17 @@ export class DeveloperDebugService {
         count,
       } as Prisma.InputJsonValue,
     });
+  }
+
+  private sanitizeErrorMessage(message: string | undefined): string | undefined {
+    if (!message) return undefined;
+    let result = message;
+    result = result.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]');
+    result = result.replace(/Authorization:\s*\S+/gi, 'Authorization: [REDACTED]');
+    result = result.replace(/Cookie:\s*[^;\s]+/gi, 'Cookie: [REDACTED]');
+    result = result.replace(/refreshToken\s*[=:]\s*\S+/gi, 'refreshToken=[REDACTED]');
+    result = result.replace(/apiKey\s*[=:]\s*\S+/gi, 'apiKey=[REDACTED]');
+    return result.slice(0, 1000);
   }
 
   buildRedactedPayload(payload: Record<string, unknown>): Record<string, unknown> {

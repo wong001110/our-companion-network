@@ -77,6 +77,11 @@ export class BatchIngestEventDto {
   @MaxLength(128)
   errorCode?: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  errorMessage?: string;
+
   @IsDateString()
   clientCreatedAt: string;
 }
