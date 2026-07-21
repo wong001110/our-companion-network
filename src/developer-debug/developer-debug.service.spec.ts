@@ -1,4 +1,4 @@
-import { DeveloperDebugService } from './developer-debug.service';
+import { DeveloperDebugService, sanitizeText, sanitizeValue } from './developer-debug.service';
 
 describe('DeveloperDebugService', () => {
   function createService(overrides: Record<string, unknown> = {}) {
@@ -565,7 +565,11 @@ describe('DeveloperDebugService', () => {
     it('returns a single event', async () => {
       const findUnique = jest.fn().mockResolvedValue({
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'test',
+        userId: 'user-1',
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
         expiresAt: new Date(Date.now() + 86400000),
       });
       const { service } = createService({
@@ -605,8 +609,11 @@ describe('DeveloperDebugService', () => {
     it('records audit when adminUserId is provided', async () => {
       const findUnique = jest.fn().mockResolvedValue({
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'test',
         userId: 'user-1',
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
         expiresAt: new Date(Date.now() + 86400000),
       });
       const findMany = jest.fn().mockResolvedValue([]);
@@ -628,6 +635,7 @@ describe('DeveloperDebugService', () => {
     it('returns relatedEvents with same correlationId', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         operation: 'chat',
         status: 'success',
@@ -636,6 +644,7 @@ describe('DeveloperDebugService', () => {
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -665,11 +674,13 @@ describe('DeveloperDebugService', () => {
     it('excludes related events with different userId', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date(),
+        receivedAt: new Date(),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -692,11 +703,13 @@ describe('DeveloperDebugService', () => {
     it('excludes expired related events', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date(),
+        receivedAt: new Date(),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -719,11 +732,13 @@ describe('DeveloperDebugService', () => {
     it('falls back to cycleId when no correlationId', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: null,
         cycleId: 'cycle-1',
         clientCreatedAt: new Date(),
+        receivedAt: new Date(),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -746,11 +761,13 @@ describe('DeveloperDebugService', () => {
     it('orders related events by clientCreatedAt ascending', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -771,11 +788,13 @@ describe('DeveloperDebugService', () => {
     it('limits related events to 200', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date(),
+        receivedAt: new Date(),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -788,7 +807,7 @@ describe('DeveloperDebugService', () => {
       await service.getEvent('evt-1');
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          take: 200,
+          take: 199,
         }),
       );
     });
@@ -796,11 +815,13 @@ describe('DeveloperDebugService', () => {
     it('returns errorMessage in related events', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
         errorMessage: 'Main error',
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -829,6 +850,7 @@ describe('DeveloperDebugService', () => {
     it('includes current event in relatedEvents', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         operation: 'chat',
         status: 'success',
@@ -837,6 +859,7 @@ describe('DeveloperDebugService', () => {
         correlationId: 'corr-1',
         cycleId: null,
         clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -855,11 +878,13 @@ describe('DeveloperDebugService', () => {
     it('returns empty relatedEvents when no correlationId or cycleId', async () => {
       const event = {
         id: 'evt-1',
+        clientEventId: 'client-1',
         kind: 'llm_request',
         userId: 'user-1',
         correlationId: null,
         cycleId: null,
         clientCreatedAt: new Date(),
+        receivedAt: new Date(),
         errorMessage: null,
         expiresAt: new Date(Date.now() + 86400000),
       };
@@ -932,6 +957,314 @@ describe('DeveloperDebugService', () => {
 
       const redacted = service.buildRedactedPayload(payload);
       expect(redacted).toEqual(payload);
+    });
+  });
+
+  describe('sanitizeText', () => {
+    it('redacts Bearer tokens', () => {
+      expect(sanitizeText('Bearer sk-abc123secret')).toBe('Bearer [REDACTED]');
+    });
+
+    it('redacts Authorization: Bearer headers', () => {
+      expect(sanitizeText('Authorization: Bearer token123')).toBe('Authorization: Bearer [REDACTED]');
+    });
+
+    it('redacts Authorization: Basic headers', () => {
+      expect(sanitizeText('Authorization: Basic dXNlcjpwYXNz')).toBe('Authorization: Basic [REDACTED]');
+    });
+
+    it('redacts Cookie values including multiple cookies', () => {
+      expect(sanitizeText('Cookie: session=abc123; other=xyz')).toBe('Cookie: [REDACTED]');
+    });
+
+    it('redacts Set-Cookie headers', () => {
+      expect(sanitizeText('Set-Cookie: session=abc123; path=/')).toBe('Set-Cookie: [REDACTED]');
+    });
+
+    it('redacts refreshToken assignments', () => {
+      expect(sanitizeText('refreshToken=secret123')).toBe('refreshToken=[REDACTED]');
+    });
+
+    it('redacts refresh_token assignments', () => {
+      expect(sanitizeText('refresh_token=secret123')).toBe('refresh_token=[REDACTED]');
+    });
+
+    it('redacts accessToken assignments', () => {
+      expect(sanitizeText('accessToken=secret123')).toBe('accessToken=[REDACTED]');
+    });
+
+    it('redacts access_token assignments', () => {
+      expect(sanitizeText('access_token=secret123')).toBe('access_token=[REDACTED]');
+    });
+
+    it('redacts apiKey assignments', () => {
+      expect(sanitizeText('apiKey=secret123')).toBe('apiKey=[REDACTED]');
+    });
+
+    it('redacts api_key assignments', () => {
+      expect(sanitizeText('api_key=secret123')).toBe('api_key=[REDACTED]');
+    });
+
+    it('redacts clientSecret assignments', () => {
+      expect(sanitizeText('clientSecret=secret123')).toBe('clientSecret=[REDACTED]');
+    });
+
+    it('redacts client_secret assignments', () => {
+      expect(sanitizeText('client_secret=secret123')).toBe('client_secret=[REDACTED]');
+    });
+
+    it('redacts password assignments', () => {
+      expect(sanitizeText('password=secret123')).toBe('password=[REDACTED]');
+    });
+
+    it('redacts bare JWT tokens', () => {
+      const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+      expect(sanitizeText(`Token: ${jwt}`)).toBe('Token: [REDACTED_JWT]');
+    });
+  });
+
+  describe('sanitizeValue', () => {
+    it('recursively sanitizes string values in objects', () => {
+      const input = { authorization: 'Bearer secret', safe: 'ok' };
+      const result = sanitizeValue(input);
+      expect(result).toEqual({ authorization: 'Bearer [REDACTED]', safe: 'ok' });
+    });
+
+    it('sanitizes strings in arrays', () => {
+      const input = ['Bearer token123', 'normal text'];
+      const result = sanitizeValue(input);
+      expect(result).toEqual(['Bearer [REDACTED]', 'normal text']);
+    });
+
+    it('sanitizes nested objects', () => {
+      const input = { headers: { authorization: 'Bearer x' } };
+      const result = sanitizeValue(input);
+      expect(result).toEqual({ headers: { authorization: 'Bearer [REDACTED]' } });
+    });
+
+    it('sanitizes strings within array elements', () => {
+      const input = [{ content: 'Bearer secret-token' }];
+      const result = sanitizeValue(input);
+      expect(result).toEqual([{ content: 'Bearer [REDACTED]' }]);
+    });
+  });
+
+  describe('getEvent response contract', () => {
+    it('returns detail with createdAt as ISO string', async () => {
+      const findUnique = jest.fn().mockResolvedValue({
+        id: 'evt-1',
+        clientEventId: 'client-1',
+        kind: 'llm_request',
+        operation: 'chat',
+        status: 'success',
+        userId: 'user-1',
+        deviceId: 'device-1',
+        provider: 'openai',
+        model: 'gpt-4',
+        companionId: null,
+        correlationId: 'corr-1',
+        cycleId: null,
+        turnId: null,
+        summary: 'Test event',
+        payload: {},
+        errorCode: null,
+        errorMessage: null,
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
+        expiresAt: new Date('2026-08-04T10:00:00Z'),
+      });
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany: jest.fn().mockResolvedValue([]) },
+      });
+
+      const result = await service.getEvent('evt-1');
+      expect(result.createdAt).toBe('2026-07-21T10:00:00.000Z');
+      expect(result.receivedAt).toBe('2026-07-21T10:00:01.000Z');
+      expect(result.expiresAt).toBe('2026-08-04T10:00:00.000Z');
+    });
+
+    it('returns timeline items with createdAt as ISO string', async () => {
+      const findUnique = jest.fn().mockResolvedValue({
+        id: 'evt-1',
+        clientEventId: 'client-1',
+        kind: 'llm_request',
+        operation: 'chat',
+        status: 'success',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        summary: 'Main',
+        payload: {},
+        errorMessage: null,
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
+        expiresAt: new Date(Date.now() + 86400000),
+      });
+      const related = [{
+        id: 'evt-2',
+        kind: 'llm_request',
+        operation: 'retry',
+        status: 'success',
+        summary: 'Retry',
+        clientCreatedAt: new Date('2026-07-21T09:59:00Z'),
+        errorMessage: 'Retry error',
+      }];
+      const findMany = jest.fn().mockResolvedValue(related);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      expect(result.relatedEvents).toHaveLength(2);
+      expect(result.relatedEvents[0].createdAt).toBe('2026-07-21T09:59:00.000Z');
+      expect(result.relatedEvents[1].createdAt).toBe('2026-07-21T10:00:00.000Z');
+    });
+
+    it('timeline is sorted by createdAt ascending', async () => {
+      const findUnique = jest.fn().mockResolvedValue({
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        payload: {},
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
+        expiresAt: new Date(Date.now() + 86400000),
+      });
+      const related = [
+        { id: 'evt-3', kind: 'llm_request', operation: null, status: null, summary: null, clientCreatedAt: new Date('2026-07-21T10:02:00Z'), errorMessage: null },
+        { id: 'evt-2', kind: 'llm_request', operation: null, status: null, summary: null, clientCreatedAt: new Date('2026-07-21T09:58:00Z'), errorMessage: null },
+      ];
+      const findMany = jest.fn().mockResolvedValue(related);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      const times = result.relatedEvents.map((e: { createdAt: string }) => e.createdAt);
+      expect(times).toEqual(times.slice().sort());
+    });
+
+    it('current event is included in timeline', async () => {
+      const findUnique = jest.fn().mockResolvedValue({
+        id: 'evt-1',
+        kind: 'llm_request',
+        userId: 'user-1',
+        correlationId: 'corr-1',
+        cycleId: null,
+        payload: {},
+        clientCreatedAt: new Date('2026-07-21T10:00:00Z'),
+        receivedAt: new Date('2026-07-21T10:00:01Z'),
+        expiresAt: new Date(Date.now() + 86400000),
+      });
+      const findMany = jest.fn().mockResolvedValue([]);
+      const { service } = createService({
+        developerDebugEvent: { findUnique, findMany },
+      });
+
+      const result = await service.getEvent('evt-1');
+      expect(result.relatedEvents.some((e: { id: string }) => e.id === 'evt-1')).toBe(true);
+    });
+  });
+
+  describe('redacts strings within payload', () => {
+    it('sanitizes string values containing secrets', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: { message: 'Bearer sk-secret123', normal: 'keep' },
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.payload.message).toBe('Bearer [REDACTED]');
+      expect(upsertCall.create.payload.normal).toBe('keep');
+    });
+
+    it('sanitizes strings in arrays within payload', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: { items: ['Bearer secret', 'normal'] },
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.payload.items[0]).toBe('Bearer [REDACTED]');
+      expect(upsertCall.create.payload.items[1]).toBe('normal');
+    });
+
+    it('sanitizes strings in requestMessages[].content', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: { requestMessages: [{ role: 'user', content: 'Bearer token123' }] },
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.payload.requestMessages[0].content).toBe('Bearer [REDACTED]');
+    });
+
+    it('sanitizes rawResponse string', async () => {
+      const upsert = jest.fn().mockResolvedValue({ id: 'evt-1' });
+      const $transaction = jest.fn((promises: unknown[]) =>
+        Promise.all(promises as Promise<unknown>[]),
+      );
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { service } = createService({
+        developerDebugEvent: { upsert, deleteMany },
+        $transaction,
+      });
+
+      await service.ingestBatch('user-1', 'device-1', [
+        {
+          clientEventId: 'evt-1',
+          kind: 'llm_request',
+          payload: { rawResponse: 'apiKey=secret123' },
+          clientCreatedAt: new Date().toISOString(),
+        },
+      ]);
+
+      const upsertCall = upsert.mock.calls[0][0];
+      expect(upsertCall.create.payload.rawResponse).toBe('apiKey=[REDACTED]');
     });
   });
 });

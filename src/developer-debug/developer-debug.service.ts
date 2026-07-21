@@ -16,6 +16,7 @@ import {
 const RETENTION_DAYS = 14;
 const MAX_BATCH_SIZE = 50;
 const BOUNDED_PRUNE_LIMIT = 100;
+const MAX_TIMELINE_SIZE = 200;
 
 const SENSITIVE_KEYS = new Set([
   'authorization',
@@ -29,7 +30,165 @@ const SENSITIVE_KEYS = new Set([
   'set-cookie',
   'secret',
   'clientsecret',
+  'client_secret',
+  'access_token',
+  'refresh_token',
 ]);
+
+const REDACT_TEXT_PATTERNS: Array<[RegExp, string]> = [
+  [/Cookie:\s*[^\r\n]*/gi, 'Cookie: [REDACTED]'],
+  [/Set-Cookie:\s*[^\r\n]*/gi, 'Set-Cookie: [REDACTED]'],
+  [/Authorization:\s*Bearer\s+\S+/gi, 'Authorization: Bearer [REDACTED]'],
+  [/Authorization:\s*Basic\s+\S+/gi, 'Authorization: Basic [REDACTED]'],
+  [/Authorization:\s*(?!Bearer\s|Basic\s)\S+/gi, 'Authorization: [REDACTED]'],
+  [/Bearer\s+\S+/gi, 'Bearer [REDACTED]'],
+  [/\brefreshToken\s*[=:]\s*\S+/gi, 'refreshToken=[REDACTED]'],
+  [/\brefresh_token\s*[=:]\s*\S+/gi, 'refresh_token=[REDACTED]'],
+  [/\baccessToken\s*[=:]\s*\S+/gi, 'accessToken=[REDACTED]'],
+  [/\baccess_token\s*[=:]\s*\S+/gi, 'access_token=[REDACTED]'],
+  [/\bapiKey\s*[=:]\s*\S+/gi, 'apiKey=[REDACTED]'],
+  [/\bapi_key\s*[=:]\s*\S+/gi, 'api_key=[REDACTED]'],
+  [/\bclientSecret\s*[=:]\s*\S+/gi, 'clientSecret=[REDACTED]'],
+  [/\bclient_secret\s*[=:]\s*\S+/gi, 'client_secret=[REDACTED]'],
+  [/\bpassword\s*[=:]\s*\S+/gi, 'password=[REDACTED]'],
+  [/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]'],
+];
+
+export function sanitizeText(value: string): string {
+  let result = value;
+  for (const [pattern, replacement] of REDACT_TEXT_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+export function sanitizeValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return sanitizeText(value);
+  if (typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    result[key] = sanitizeValue(val);
+  }
+  return result;
+}
+
+interface DebugEventRow {
+  id: string;
+  clientEventId: string;
+  userId: string;
+  user?: { username: string } | null;
+  deviceId: string;
+  kind: string;
+  operation: string | null;
+  status: string | null;
+  provider: string | null;
+  model: string | null;
+  companionId: string | null;
+  correlationId: string | null;
+  cycleId: string | null;
+  turnId: string | null;
+  summary: string | null;
+  payload: Prisma.JsonValue;
+  errorCode: string | null;
+  errorMessage: string | null;
+  clientCreatedAt: Date;
+  receivedAt: Date;
+  expiresAt: Date;
+}
+
+export interface DebugEventListResponse {
+  id: string;
+  kind: string;
+  operation: string | null;
+  status: string | null;
+  userId: string;
+  username: string | undefined;
+  deviceId: string;
+  provider: string | null;
+  model: string | null;
+  correlationId: string | null;
+  cycleId: string | null;
+  turnId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  receivedAt: string;
+  expiresAt: string;
+}
+
+export interface DebugEventDetailResponse {
+  id: string;
+  clientEventId: string;
+  kind: string;
+  operation: string | null;
+  status: string | null;
+  userId: string;
+  deviceId: string;
+  provider: string | null;
+  model: string | null;
+  companionId: string | null;
+  correlationId: string | null;
+  cycleId: string | null;
+  turnId: string | null;
+  summary: string | null;
+  payload: Prisma.JsonValue;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  receivedAt: string;
+  expiresAt: string;
+  relatedEvents: DebugTimelineItem[];
+}
+
+export interface DebugTimelineItem {
+  id: string;
+  kind: string;
+  operation: string | null;
+  status: string | null;
+  summary: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
+function toDebugEventDetailResponse(event: DebugEventRow): DebugEventDetailResponse {
+  return {
+    id: event.id,
+    clientEventId: event.clientEventId,
+    kind: event.kind,
+    operation: event.operation,
+    status: event.status,
+    userId: event.userId,
+    deviceId: event.deviceId,
+    provider: event.provider,
+    model: event.model,
+    companionId: event.companionId,
+    correlationId: event.correlationId,
+    cycleId: event.cycleId,
+    turnId: event.turnId,
+    summary: event.summary,
+    payload: event.payload,
+    errorCode: event.errorCode,
+    errorMessage: event.errorMessage,
+    createdAt: event.clientCreatedAt.toISOString(),
+    receivedAt: event.receivedAt.toISOString(),
+    expiresAt: event.expiresAt.toISOString(),
+    relatedEvents: [],
+  };
+}
+
+function toDebugTimelineItem(row: { id: string; kind: string; operation: string | null; status: string | null; summary: string | null; errorMessage: string | null; clientCreatedAt: Date }): DebugTimelineItem {
+  return {
+    id: row.id,
+    kind: row.kind,
+    operation: row.operation,
+    status: row.status,
+    summary: row.summary,
+    errorMessage: row.errorMessage,
+    createdAt: row.clientCreatedAt.toISOString(),
+  };
+}
 
 @Injectable()
 export class DeveloperDebugService {
@@ -77,6 +236,8 @@ export class DeveloperDebugService {
     const results = await this.prisma.$transaction(
       events.map((event) => {
         const redactedPayload = this.buildRedactedPayload(event.payload);
+        const sanitizedSummary = event.summary ? sanitizeText(event.summary) : event.summary;
+        const sanitizedErrorMessage = this.sanitizeErrorMessage(event.errorMessage);
         return this.prisma.developerDebugEvent.upsert({
           where: {
             userId_clientEventId: {
@@ -97,10 +258,10 @@ export class DeveloperDebugService {
             correlationId: event.correlationId,
             cycleId: event.cycleId,
             turnId: event.turnId,
-            summary: event.summary,
+            summary: sanitizedSummary,
             payload: redactedPayload as Prisma.InputJsonValue,
             errorCode: event.errorCode,
-            errorMessage: this.sanitizeErrorMessage(event.errorMessage),
+            errorMessage: sanitizedErrorMessage,
             clientCreatedAt: new Date(event.clientCreatedAt),
             receivedAt: now,
             expiresAt,
@@ -116,10 +277,10 @@ export class DeveloperDebugService {
             correlationId: event.correlationId,
             cycleId: event.cycleId,
             turnId: event.turnId,
-            summary: event.summary,
+            summary: sanitizedSummary,
             payload: redactedPayload as Prisma.InputJsonValue,
             errorCode: event.errorCode,
-            errorMessage: this.sanitizeErrorMessage(event.errorMessage),
+            errorMessage: sanitizedErrorMessage,
           },
         });
       }),
@@ -183,42 +344,38 @@ export class DeveloperDebugService {
       ? { id: filters.cursor }
       : undefined;
 
-    const rows = await this.prisma.$transaction(async (tx) => {
-      const r = await tx.developerDebugEvent.findMany({
-        where,
-        orderBy,
-        take: limit + 1,
-        ...(cursor ? { cursor, skip: 1 } : {}),
-        select: {
-          id: true,
-          clientEventId: true,
-          userId: true,
-          user: { select: { username: true } },
-          deviceId: true,
-          kind: true,
-          operation: true,
-          status: true,
-          provider: true,
-          model: true,
-          correlationId: true,
-          cycleId: true,
-          turnId: true,
-          errorCode: true,
-          errorMessage: true,
-          clientCreatedAt: true,
-          receivedAt: true,
-          expiresAt: true,
-        },
-      });
-
-      return r;
+    const rows = await this.prisma.developerDebugEvent.findMany({
+      where,
+      orderBy,
+      take: limit + 1,
+      ...(cursor ? { cursor, skip: 1 } : {}),
+      select: {
+        id: true,
+        clientEventId: true,
+        userId: true,
+        user: { select: { username: true } },
+        deviceId: true,
+        kind: true,
+        operation: true,
+        status: true,
+        provider: true,
+        model: true,
+        correlationId: true,
+        cycleId: true,
+        turnId: true,
+        errorCode: true,
+        errorMessage: true,
+        clientCreatedAt: true,
+        receivedAt: true,
+        expiresAt: true,
+      },
     });
 
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
     const nextCursor = hasMore ? sliced[sliced.length - 1]?.id : null;
 
-    const items = sliced.map((row) => ({
+    const items: DebugEventListResponse[] = sliced.map((row) => ({
       id: row.id,
       kind: row.kind,
       operation: row.operation,
@@ -247,7 +404,7 @@ export class DeveloperDebugService {
     };
   }
 
-  async getEvent(id: string, adminUserId?: string) {
+  async getEvent(id: string, adminUserId?: string): Promise<DebugEventDetailResponse> {
     const event = await this.prisma.developerDebugEvent.findUnique({
       where: { id },
     });
@@ -290,7 +447,7 @@ export class DeveloperDebugService {
           : {}),
     };
 
-    const relatedEvents = event.correlationId || event.cycleId
+    const relatedRows = event.correlationId || event.cycleId
       ? await this.prisma.developerDebugEvent.findMany({
           where: relatedWhere,
           select: {
@@ -303,26 +460,28 @@ export class DeveloperDebugService {
             errorMessage: true,
           },
           orderBy: { clientCreatedAt: 'asc' },
-          take: 200,
+          take: MAX_TIMELINE_SIZE - 1,
         })
       : [];
 
-    const currentEvent = {
+    const currentTimelineItem = toDebugTimelineItem({
       id: event.id,
       kind: event.kind,
       operation: event.operation,
       status: event.status,
       summary: event.summary,
-      clientCreatedAt: event.clientCreatedAt,
       errorMessage: event.errorMessage,
-    };
+      clientCreatedAt: event.clientCreatedAt,
+    });
 
-    return {
-      ...event,
-      relatedEvents: [currentEvent, ...relatedEvents].sort(
-        (a, b) => a.clientCreatedAt.getTime() - b.clientCreatedAt.getTime(),
-      ),
-    };
+    const relatedTimeline = relatedRows.map(toDebugTimelineItem);
+    const timeline = [currentTimelineItem, ...relatedTimeline]
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      .slice(0, MAX_TIMELINE_SIZE);
+
+    const response = toDebugEventDetailResponse(event);
+    response.relatedEvents = timeline;
+    return response;
   }
 
   async pruneExpired() {
@@ -359,20 +518,6 @@ export class DeveloperDebugService {
     }
   }
 
-  async recordExportAudit(adminUserId: string, eventId: string, event: { kind: string; userId: string }) {
-    void this.auditService.record({
-      adminUserId,
-      action: 'developer_debug_event_exported',
-      targetType: 'DeveloperDebugEvent',
-      targetId: eventId,
-      metadata: {
-        eventId,
-        kind: event.kind,
-        userId: event.userId,
-      } as Prisma.InputJsonValue,
-    });
-  }
-
   async recordExpiredDeleteAudit(adminUserId: string, count: number) {
     void this.auditService.record({
       adminUserId,
@@ -384,15 +529,9 @@ export class DeveloperDebugService {
     });
   }
 
-  private sanitizeErrorMessage(message: string | undefined): string | undefined {
+  sanitizeErrorMessage(message: string | undefined): string | undefined {
     if (!message) return undefined;
-    let result = message;
-    result = result.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]');
-    result = result.replace(/Authorization:\s*\S+/gi, 'Authorization: [REDACTED]');
-    result = result.replace(/Cookie:\s*[^;\s]+/gi, 'Cookie: [REDACTED]');
-    result = result.replace(/refreshToken\s*[=:]\s*\S+/gi, 'refreshToken=[REDACTED]');
-    result = result.replace(/apiKey\s*[=:]\s*\S+/gi, 'apiKey=[REDACTED]');
-    return result.slice(0, 1000);
+    return sanitizeText(message).slice(0, 1000);
   }
 
   buildRedactedPayload(payload: Record<string, unknown>): Record<string, unknown> {
@@ -405,14 +544,19 @@ export class DeveloperDebugService {
       const lowerKey = key.toLowerCase();
       if (SENSITIVE_KEYS.has(lowerKey)) {
         result[key] = '[REDACTED]';
+      } else if (typeof value === 'string') {
+        result[key] = sanitizeText(value);
       } else if (value && typeof value === 'object' && !Array.isArray(value)) {
         result[key] = this.redactObject(value as Record<string, unknown>);
       } else if (Array.isArray(value)) {
-        result[key] = value.map((item) =>
-          item && typeof item === 'object'
-            ? this.redactObject(item as Record<string, unknown>)
-            : item,
-        );
+        result[key] = value.map((item) => {
+          if (item && typeof item === 'object') {
+            if (Array.isArray(item)) return item.map((i) => i && typeof i === 'object' ? this.redactObject(i as Record<string, unknown>) : i);
+            return this.redactObject(item as Record<string, unknown>);
+          }
+          if (typeof item === 'string') return sanitizeText(item);
+          return item;
+        });
       } else {
         result[key] = value;
       }
