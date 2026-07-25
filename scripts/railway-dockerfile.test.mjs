@@ -3,19 +3,14 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 for (const dockerfile of ['Dockerfile.api', 'Dockerfile.portal']) {
-  test(`${dockerfile} uses Railway-compatible cache mount ids`, () => {
+  test(`${dockerfile} avoids Railway service-ID-coupled cache mounts`, () => {
     const content = fs.readFileSync(dockerfile, 'utf8');
-    const cacheMounts = [...content.matchAll(/--mount=([^\s]+)/g)]
-      .map((match) => match[1])
-      .filter((mount) => mount.includes('type=cache'));
 
-    assert.ok(cacheMounts.length > 0, `${dockerfile} should contain an npm cache mount`);
-    for (const mount of cacheMounts) {
-      assert.match(
-        mount,
-        /(?:^|,)id=[^,]+(?:,|$)/,
-        `${dockerfile} cache mounts require an explicit id for Railway Metal builders`,
-      );
-    }
+    assert.doesNotMatch(
+      content,
+      /--mount=type=cache/,
+      `${dockerfile} must not use Railway cache mounts unless a real service ID is intentionally hardcoded`,
+    );
+    assert.match(content, /RUN npm ci/, `${dockerfile} must still install dependencies deterministically`);
   });
 }
