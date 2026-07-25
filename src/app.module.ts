@@ -7,6 +7,7 @@ import { IdentityModule } from './identity/identity.module';
 import { FriendModule } from './friend/friend.module';
 import { PresenceModule } from './presence/presence.module';
 import { VisitModule } from './visit/visit.module';
+import { VisitSocialModule } from './visit-social/visit-social.module';
 import { NotificationModule } from './notification/notification.module';
 import { CommunityModule } from './community/community.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -32,6 +33,7 @@ import { PortalModule } from './portal/portal.module';
     FriendModule,
     PresenceModule,
     VisitModule,
+    VisitSocialModule,
     NotificationModule,
     CommunityModule,
     CompanionModule,
