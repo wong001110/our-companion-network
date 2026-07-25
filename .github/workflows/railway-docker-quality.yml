@@ -106,7 +106,18 @@ jobs:
           cache-dependency-path: portal/package-lock.json
       - run: npm ci --prefix portal
       - name: Portal typecheck
-        run: npm run portal:typecheck
+        id: portal_typecheck
+        continue-on-error: true
+        run: npm run portal:typecheck > portal-typecheck.log 2>&1
+      - name: Upload Portal typecheck diagnostics
+        if: steps.portal_typecheck.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-portal-typecheck-diagnostics
+          path: portal-typecheck.log
+      - name: Fail on Portal typecheck error
+        if: steps.portal_typecheck.outcome == 'failure'
+        run: cat portal-typecheck.log && exit 1
       - name: Portal lint
         run: npm run portal:lint
       - name: Portal tests
