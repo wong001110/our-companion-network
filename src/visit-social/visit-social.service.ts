@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SocialEventPublisher } from '../common/social-event-publisher.service';
 import {
   assertNextVisitTurn,
+  assertSharedMomentEligible,
   sanitizeVisitShareEnvelope,
   type SanitizedVisitShareEnvelope,
   type VisitShareEnvelopeInput,
@@ -212,8 +213,8 @@ export class VisitSocialService {
     const moment = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "VisitSession" WHERE "id" = ${sessionId} FOR UPDATE`;
       const session = await this.requireParticipantSession(userId, sessionId, tx);
-      if (!['ended', 'cancelled', 'failed'].includes(session.state)) {
-        throw new ConflictException({ code: 'VISIT_SESSION_NOT_TERMINAL', message: 'The Visit must end before creating a Shared Moment' });
+      if (session.state !== 'ended') {
+        throw new ConflictException({ code: 'VISIT_SESSION_NOT_COMPLETED', message: 'Only a completed Visit can create a Shared Moment' });
       }
       const shareRows = await tx.$queryRaw<ShareRow[]>`
         SELECT "id", "sessionId", "title", "summary", "tags", "sourceUrl", "createdByUserId", "createdAt"
@@ -223,7 +224,14 @@ export class VisitSocialService {
       const countRows = await tx.$queryRaw<Array<{ count: bigint }>>`
         SELECT COUNT(*)::bigint AS "count" FROM "VisitTurn" WHERE "sessionId" = ${sessionId}
       `;
-      return this.ensureMoment(tx, sessionId, Number(countRows[0]?.count ?? 0n), shareRows[0]);
+      const turnCount = Number(countRows[0]?.count ?? 0n);
+      try {
+        assertSharedMomentEligible(session.state, turnCount);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'VISIT_SHARED_MOMENT_INVALID';
+        throw new ConflictException({ code, message: 'The Shared Moment was rejected' });
+      }
+      return this.ensureMoment(tx, sessionId, turnCount, shareRows[0]);
     });
     this.publish(sessionId, userId, 'visit.shared_moment.created');
     return this.momentSummary(moment);
