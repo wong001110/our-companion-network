@@ -5,6 +5,7 @@ import { BrowserSecurityService } from './common/browser-security.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks();
 
   app.setGlobalPrefix('api');
 
@@ -26,8 +27,9 @@ async function bootstrap() {
     allowedHeaders: ['content-type', 'authorization', 'x-csrf-token'],
   });
 
-  const port = process.env.PORT || 3001;
-  await app.listen(port);
-  console.log(`Application is running on: http://localhost:${port}`);
+  const port = Number(process.env.PORT ?? 3001);
+  await app.listen(port, '0.0.0.0');
+  console.log(`Application is running on port ${port}`);
 }
-bootstrap();
+
+void bootstrap();
