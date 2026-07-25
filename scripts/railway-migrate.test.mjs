@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import { migrationAction } from './railway-migrate.mjs';
 
@@ -12,4 +13,13 @@ test('deploys pending migrations when Prisma history exists', () => {
 
 test('refuses to guess on a non-empty unbaselined database', () => {
   assert.equal(migrationAction({ hasMigrationTable: false, applicationTableCount: 24 }), 'refuse');
+});
+
+test('Railway API config uses one ordered pre-deploy command', () => {
+  const config = JSON.parse(fs.readFileSync('deploy/railway/api.railway.json', 'utf8'));
+  const commands = config.deploy?.preDeployCommand;
+
+  assert.ok(Array.isArray(commands));
+  assert.equal(commands.length, 1);
+  assert.match(commands[0], /node scripts\/railway-migrate\.mjs && node dist\/src\/admin\/initial-superadmin\.cli\.js/);
 });
