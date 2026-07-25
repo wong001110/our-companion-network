@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:20-bookworm-slim AS build
+WORKDIR /app/portal
+
+COPY portal/package.json portal/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+COPY portal ./
+RUN npm run build
+
+FROM caddy:2.10-alpine AS runtime
+ENV PORT=8080
+ENV API_ORIGIN=http://network-api.railway.internal:3001
+
+COPY deploy/railway/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /app/portal/dist /srv
+
+EXPOSE 8080
