@@ -28,7 +28,7 @@
 - [x] Policy and service tests cover sanitization, authorization, block, replay, first-speaker, alternation and limit invariants.
 - [x] CI migration validation, lint, build and full test suite are green.
 - [x] Independent diff review complete with no unresolved blocking findings.
-- [ ] Merged to `main` and task branch deleted.
+- [x] Merged to `main` and task branch deleted.
 
 ## Adversarial cases
 
