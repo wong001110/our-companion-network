@@ -1,11 +1,11 @@
 CREATE TABLE "VisitShareEnvelope" (
-  "id" UUID NOT NULL,
-  "sessionId" UUID NOT NULL,
+  "id" TEXT NOT NULL,
+  "sessionId" TEXT NOT NULL,
   "title" VARCHAR(120) NOT NULL,
   "summary" VARCHAR(600) NOT NULL,
   "tags" JSONB NOT NULL DEFAULT '[]'::jsonb,
   "sourceUrl" VARCHAR(2000),
-  "createdByUserId" UUID NOT NULL,
+  "createdByUserId" TEXT NOT NULL,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "VisitShareEnvelope_pkey" PRIMARY KEY ("id")
 );
@@ -18,11 +18,11 @@ ALTER TABLE "VisitShareEnvelope" ADD CONSTRAINT "VisitShareEnvelope_createdByUse
   FOREIGN KEY ("createdByUserId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 CREATE TABLE "VisitTurn" (
-  "id" UUID NOT NULL,
-  "sessionId" UUID NOT NULL,
+  "id" TEXT NOT NULL,
+  "sessionId" TEXT NOT NULL,
   "sequence" INTEGER NOT NULL,
-  "clientTurnId" UUID NOT NULL,
-  "senderUserId" UUID NOT NULL,
+  "clientTurnId" TEXT NOT NULL,
+  "senderUserId" TEXT NOT NULL,
   "intent" VARCHAR(40) NOT NULL,
   "message" VARCHAR(800) NOT NULL,
   "emotion" VARCHAR(40),
@@ -40,8 +40,8 @@ ALTER TABLE "VisitTurn" ADD CONSTRAINT "VisitTurn_senderUserId_fkey"
   FOREIGN KEY ("senderUserId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 CREATE TABLE "VisitSharedMoment" (
-  "id" UUID NOT NULL,
-  "sessionId" UUID NOT NULL,
+  "id" TEXT NOT NULL,
+  "sessionId" TEXT NOT NULL,
   "title" VARCHAR(160) NOT NULL,
   "summary" VARCHAR(600) NOT NULL,
   "turnCount" INTEGER NOT NULL,
