@@ -6,6 +6,7 @@ on:
       - 'src/visit-social/**'
       - 'src/app.module.ts'
       - 'src/common/protocol-config.service.ts'
+      - 'prisma/schema.prisma'
       - 'prisma/migrations/**'
       - 'docs/SOCIAL_VISIT_MVP_GAUNTLET.md'
       - '.github/workflows/social-visit-quality.yml'
@@ -15,6 +16,7 @@ on:
       - 'src/visit-social/**'
       - 'src/app.module.ts'
       - 'src/common/protocol-config.service.ts'
+      - 'prisma/schema.prisma'
       - 'prisma/migrations/**'
 
 jobs:
@@ -42,18 +44,22 @@ jobs:
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - name: Validate current schema and Social migration
+      - name: Validate Social migration against main schema
         id: migrate
         continue-on-error: true
         run: |
-          npx prisma db push --skip-generate > migration.log 2>&1
+          git show origin/main:prisma/schema.prisma > /tmp/main-schema.prisma
+          npx prisma db push --schema /tmp/main-schema.prisma --skip-generate > migration.log 2>&1
           psql "$PG_DATABASE_URL" -v ON_ERROR_STOP=1 -f prisma/migrations/20260725120000_social_visit_mvp/migration.sql >> migration.log 2>&1
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code >> migration.log 2>&1
       - name: Upload migration diagnostics
         if: steps.migrate.outcome == 'failure'
         uses: actions/upload-artifact@v4
