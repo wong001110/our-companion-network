@@ -68,11 +68,24 @@ The API variable `DATABASE_URL=${{Postgres.DATABASE_URL}}` uses Railway private 
 
 ### API database bootstrap
 
-The pre-deploy command runs `node scripts/railway-migrate.mjs`.
+The API pre-deploy stage runs, in order:
+
+```text
+node scripts/railway-migrate.mjs
+node dist/src/admin/initial-superadmin.cli.js
+```
+
+Database behavior:
 
 - A completely empty database is created from the current Prisma schema, then all checked-in historical migrations are recorded as the initial production baseline.
 - A database with Prisma migration history receives only pending migrations.
 - A non-empty database without Prisma migration history is rejected rather than modified automatically.
+
+Caretaker behavior:
+
+- The configured `INITIAL_SUPERADMIN_*` account is created on the first deployment.
+- Later deployments keep the account as `SUPERADMIN` without resetting its password when `INITIAL_SUPERADMIN_RESET_PASSWORD=false`.
+- Set the reset flag to `true` only for an intentional password reset, deploy once, then return it to `false`.
 
 Do not manually run `prisma db push` against the Railway production database.
 
@@ -159,6 +172,7 @@ Expected:
 
 - `/healthz` returns `ok`;
 - direct navigation to `/login` and other SPA routes loads the Portal;
+- the configured initial Caretaker can sign in;
 - login cookies are Secure and HttpOnly where applicable;
 - browser requests remain on the Portal domain and use `/api/...` paths.
 
@@ -179,6 +193,7 @@ Use two accounts and two isolated Desktop profiles:
 - [ ] `DATABASE_URL` is a Railway reference variable, not a copied public URL.
 - [ ] JWT access and refresh secrets are different and stored only in Railway.
 - [ ] R2 credentials are bucket-scoped and stored only in Railway.
+- [ ] Initial Caretaker credentials are unique and the password-reset flag is `false` after setup.
 - [ ] Portal origin variables exactly match the generated HTTPS Portal origin.
 - [ ] API health check and Portal health check are green.
 - [ ] API and Portal public domains use HTTPS.
