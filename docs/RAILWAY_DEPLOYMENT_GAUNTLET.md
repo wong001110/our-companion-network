@@ -25,9 +25,9 @@
 - [x] Existing Prisma migration history remains the path for later deployments.
 - [x] Initial Caretaker setup is idempotent when password reset is disabled.
 - [x] Secrets remain variable-only and are absent from images and Git.
-- [ ] API lint, build, tests, health smoke and Docker build green.
-- [ ] Portal QA, health smoke, SPA fallback and Docker build green.
-- [ ] Independent deployment diff review complete.
+- [x] API Node 22 lint, build, tests, database bootstrap, Caretaker setup, health smoke and Docker build green.
+- [x] Portal Node 22 typecheck, lint, tests, production build, health smoke, SPA fallback and Docker build green.
+- [x] Independent deployment diff review complete with no unresolved blocking findings.
 - [ ] Merged to `main` and task branch deleted.
 
 ## Manual Railway checklist
