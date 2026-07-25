@@ -105,7 +105,14 @@ jobs:
           cache: npm
           cache-dependency-path: portal/package-lock.json
       - run: npm ci --prefix portal
-      - run: npm run portal:qa
+      - name: Portal typecheck
+        run: npm run portal:typecheck
+      - name: Portal lint
+        run: npm run portal:lint
+      - name: Portal tests
+        run: npm run portal:test
+      - name: Portal production build
+        run: npm run portal:build
       - name: Build Portal Docker image
         env:
           DOCKER_BUILDKIT: '1'
