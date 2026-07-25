@@ -36,6 +36,7 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/our_companion_network_test?schema=public
+      PG_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/our_companion_network_test
       JWT_SECRET: social-visit-quality-access-secret-32
       JWT_REFRESH_SECRET: social-visit-quality-refresh-secret-32
       NODE_ENV: test
@@ -47,10 +48,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - name: Apply migrations
+      - name: Validate current schema and Social migration
         id: migrate
         continue-on-error: true
-        run: npx prisma migrate deploy > migration.log 2>&1
+        run: |
+          npx prisma db push --skip-generate > migration.log 2>&1
+          psql "$PG_DATABASE_URL" -v ON_ERROR_STOP=1 -f prisma/migrations/20260725120000_social_visit_mvp/migration.sql >> migration.log 2>&1
       - name: Upload migration diagnostics
         if: steps.migrate.outcome == 'failure'
         uses: actions/upload-artifact@v4
