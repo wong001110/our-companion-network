@@ -1,0 +1,114 @@
+name: Railway Docker Quality
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile.api'
+      - 'Dockerfile.portal'
+      - '.dockerignore'
+      - 'deploy/railway/**'
+      - 'scripts/railway-migrate.mjs'
+      - 'scripts/railway-migrate.test.mjs'
+      - 'src/main.ts'
+      - 'prisma/**'
+      - 'portal/**'
+      - 'docs/RAILWAY_DOCKER_DEPLOYMENT.md'
+      - '.github/workflows/railway-docker-quality.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.api'
+      - 'Dockerfile.portal'
+      - '.dockerignore'
+      - 'deploy/railway/**'
+      - 'scripts/railway-migrate.mjs'
+      - 'src/main.ts'
+      - 'prisma/**'
+      - 'portal/**'
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: railway_deployment_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/railway_deployment_test?schema=public
+      JWT_SECRET: railway-api-quality-access-secret-32
+      JWT_REFRESH_SECRET: railway-api-quality-refresh-secret-32
+      PORTAL_ORIGINS: http://localhost:4173
+      PORTAL_COOKIE_SECURE: 'false'
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: node --test scripts/railway-migrate.test.mjs
+      - name: Bootstrap an empty database
+        run: node scripts/railway-migrate.mjs
+      - name: Verify migration bootstrap is idempotent
+        run: node scripts/railway-migrate.mjs
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - name: Smoke API health endpoint
+        run: |
+          PORT=3001 npm run start:prod > api-smoke.log 2>&1 &
+          API_PID=$!
+          trap 'kill $API_PID || true; cat api-smoke.log' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3001/api/meta/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Build API Docker image
+        env:
+          DOCKER_BUILDKIT: '1'
+        run: docker build --file Dockerfile.api --tag our-companion-network-api:ci .
+
+  portal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci --prefix portal
+      - run: npm run portal:qa
+      - name: Build Portal Docker image
+        env:
+          DOCKER_BUILDKIT: '1'
+        run: docker build --file Dockerfile.portal --tag our-companion-network-portal:ci .
+      - name: Smoke Portal container and SPA fallback
+        run: |
+          docker run --detach --name portal-smoke --publish 18080:8080 \
+            --env PORT=8080 \
+            --env API_ORIGIN=http://127.0.0.1:3001 \
+            our-companion-network-portal:ci
+          trap 'docker logs portal-smoke || true; docker rm --force portal-smoke || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18080/healthz | grep --quiet ok; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/login | grep --quiet '<div id="root"></div>'
