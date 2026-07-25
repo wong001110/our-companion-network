@@ -9,6 +9,7 @@ on:
       - 'deploy/railway/**'
       - 'scripts/railway-migrate.mjs'
       - 'scripts/railway-migrate.test.mjs'
+      - 'scripts/railway-dockerfile.test.mjs'
       - 'src/main.ts'
       - 'prisma/**'
       - 'portal/**'
@@ -22,6 +23,8 @@ on:
       - '.dockerignore'
       - 'deploy/railway/**'
       - 'scripts/railway-migrate.mjs'
+      - 'scripts/railway-migrate.test.mjs'
+      - 'scripts/railway-dockerfile.test.mjs'
       - 'src/main.ts'
       - 'prisma/**'
       - 'portal/**'
@@ -58,7 +61,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - run: node --test scripts/railway-migrate.test.mjs
+      - run: node --test scripts/railway-migrate.test.mjs scripts/railway-dockerfile.test.mjs
       - name: Bootstrap an empty database
         run: node scripts/railway-migrate.mjs
       - name: Verify migration bootstrap is idempotent
