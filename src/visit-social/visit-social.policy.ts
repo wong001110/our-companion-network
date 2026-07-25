@@ -77,6 +77,11 @@ export function assertNextVisitTurn(input: {
   if (input.lastSenderUserId === input.senderUserId) throw new Error('VISIT_TURN_ORDER_INVALID');
 }
 
+export function assertSharedMomentEligible(state: string, turnCount: number): void {
+  if (state !== 'ended') throw new Error('VISIT_SESSION_NOT_COMPLETED');
+  if (!Number.isInteger(turnCount) || turnCount < 1) throw new Error('VISIT_SHARED_MOMENT_EMPTY');
+}
+
 function normalizeText(value: string, maximumLength: number): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, maximumLength);
 }
