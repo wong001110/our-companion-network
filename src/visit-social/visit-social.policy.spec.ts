@@ -1,4 +1,4 @@
-import { assertNextVisitTurn, sanitizeVisitShareEnvelope, VISIT_SOCIAL_MAX_TURNS } from './visit-social.policy';
+import { assertNextVisitTurn, assertSharedMomentEligible, sanitizeVisitShareEnvelope, VISIT_SOCIAL_MAX_TURNS } from './visit-social.policy';
 
 describe('Visit social policy', () => {
   it('sanitizes the approved Discovery copy and limits tags', () => {
@@ -38,5 +38,12 @@ describe('Visit social policy', () => {
       lastSenderUserId: 'owner',
       currentTurnCount: VISIT_SOCIAL_MAX_TURNS,
     })).toThrow('VISIT_TURN_LIMIT_REACHED');
+  });
+
+  it('does not create Shared Moments for cancelled or empty Visits', () => {
+    expect(() => assertSharedMomentEligible('cancelled', 2)).toThrow('VISIT_SESSION_NOT_COMPLETED');
+    expect(() => assertSharedMomentEligible('failed', 2)).toThrow('VISIT_SESSION_NOT_COMPLETED');
+    expect(() => assertSharedMomentEligible('ended', 0)).toThrow('VISIT_SHARED_MOMENT_EMPTY');
+    expect(() => assertSharedMomentEligible('ended', 1)).not.toThrow();
   });
 });
