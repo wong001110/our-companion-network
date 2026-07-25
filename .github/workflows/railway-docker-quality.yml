@@ -64,7 +64,19 @@ jobs:
       - name: Verify migration bootstrap is idempotent
         run: node scripts/railway-migrate.mjs
       - run: npm run lint
+      - name: Require lint to leave a clean tree
+        run: git diff --exit-code
       - run: npm run build
+      - name: Verify initial Caretaker setup is idempotent
+        env:
+          NODE_ENV: production
+          INITIAL_SUPERADMIN_EMAIL: railway-caretaker@example.test
+          INITIAL_SUPERADMIN_USERNAME: railway-caretaker
+          INITIAL_SUPERADMIN_PASSWORD: railway-quality-password-123
+          INITIAL_SUPERADMIN_RESET_PASSWORD: 'false'
+        run: |
+          node dist/src/admin/initial-superadmin.cli.js
+          node dist/src/admin/initial-superadmin.cli.js
       - run: npm test -- --runInBand
       - name: Smoke API health endpoint
         run: |
