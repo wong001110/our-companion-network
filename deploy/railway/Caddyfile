@@ -1,0 +1,28 @@
+:{$PORT:8080} {
+  encode zstd gzip
+
+  respond /healthz "ok" 200
+
+  @api path /api/*
+  reverse_proxy @api {$API_ORIGIN} {
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Forwarded-Host {host}
+  }
+
+  @socket path /socket.io/*
+  reverse_proxy @socket {$API_ORIGIN} {
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Forwarded-Host {host}
+  }
+
+  root * /srv
+  try_files {path} /index.html
+  file_server
+
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    -Server
+  }
+}
