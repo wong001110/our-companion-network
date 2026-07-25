@@ -6,7 +6,7 @@
 - Existing invitation, Ready, heartbeat and visual Visit lifecycle remains authoritative.
 - One user-approved Discovery copy per Visit.
 - Alternating Companion turns, visitor owner starts, maximum 12 turns.
-- Deterministic Shared Moment after a terminal Visit.
+- Deterministic Shared Moment after a completed conversation.
 - Server stores only the approved share copy, bounded turns and Shared Moment.
 
 ## Explicit exclusions
@@ -23,10 +23,11 @@
 - [x] Turn order, idempotency and 12-turn cap are deterministic.
 - [x] Social state is participant-scoped.
 - [x] Shared Moment contains no private Reflection.
-- [x] Database migration added with session cascade cleanup.
-- [x] Policy unit tests cover sanitization, first-speaker, alternation and limit invariants.
-- [ ] CI build, lint, unit and e2e jobs green.
-- [ ] Independent diff review complete.
+- [x] Cancelled, failed and empty Visits cannot create Shared Moments.
+- [x] Database migration added with session cascade cleanup and Prisma schema alignment.
+- [x] Policy and service tests cover sanitization, authorization, block, replay, first-speaker, alternation and limit invariants.
+- [x] CI migration validation, lint, build and full test suite are green.
+- [x] Independent diff review complete with no unresolved blocking findings.
 - [ ] Merged to `main` and task branch deleted.
 
 ## Adversarial cases
