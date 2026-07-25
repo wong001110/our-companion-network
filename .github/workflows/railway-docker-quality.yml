@@ -91,9 +91,20 @@ jobs:
           done
           exit 1
       - name: Build API Docker image
+        id: api_docker_build
+        continue-on-error: true
         env:
           DOCKER_BUILDKIT: '1'
-        run: docker build --file Dockerfile.api --tag our-companion-network-api:ci .
+        run: docker build --progress=plain --file Dockerfile.api --tag our-companion-network-api:ci . > api-docker-build.log 2>&1
+      - name: Upload API Docker diagnostics
+        if: steps.api_docker_build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-api-docker-diagnostics
+          path: api-docker-build.log
+      - name: Fail on API Docker build error
+        if: steps.api_docker_build.outcome == 'failure'
+        run: tail -n 200 api-docker-build.log && exit 1
 
   portal:
     runs-on: ubuntu-latest
