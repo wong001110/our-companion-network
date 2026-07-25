@@ -16,6 +16,7 @@ export class ProtocolConfigService {
     visitInvitations: true,
     visitSessions: true,
     visualVisits: true,
+    socialVisits: true,
   } as const;
 
   constructor(config: ConfigService, private readonly storage?: StorageService, private readonly visits: VisitConfigService = new VisitConfigService(config)) {
@@ -30,7 +31,7 @@ export class ProtocolConfigService {
 
   get features() {
     const enabled = this.storageCapability.uploadsEnabled && this.storageCapability.downloadsEnabled;
-    return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled, visitInvitations: enabled, visitSessions: enabled, visualVisits: enabled } as const;
+    return { ...this.baseFeatures, publicCompanions: enabled, assetPacks: enabled, visitInvitations: enabled, visitSessions: enabled, visualVisits: enabled, socialVisits: enabled } as const;
   }
 
   get visitRuntimeConfig() {

@@ -54,6 +54,8 @@ model User {
   visitInvitationsHosted VisitInvitation[] @relation("VisitInvitationHost")
   visitSessionsOwned VisitSession[] @relation("VisitSessionVisitorOwner")
   visitSessionsHosted VisitSession[] @relation("VisitSessionHost")
+  visitShareEnvelopesCreated VisitShareEnvelope[] @relation("VisitShareEnvelopeCreator")
+  visitTurnsSent VisitTurn[] @relation("VisitTurnSender")
   debugEvents       DeveloperDebugEvent[]
 
   @@index([username])
@@ -291,11 +293,58 @@ model VisitSession {
   failureCode          String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  socialShare          VisitShareEnvelope?
+  socialTurns          VisitTurn[]
+  sharedMoment         VisitSharedMoment?
 
   @@index([visitorOwnerUserId, state])
   @@index([hostUserId, state])
   @@index([assetPackRefId, state])
   @@index([updatedAt, state])
+}
+
+model VisitShareEnvelope {
+  id              String   @id @default(uuid())
+  sessionId       String   @unique
+  session         VisitSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  title           String   @db.VarChar(120)
+  summary         String   @db.VarChar(600)
+  tags            Json     @default("[]")
+  sourceUrl       String?  @db.VarChar(2000)
+  createdByUserId String
+  createdBy       User     @relation("VisitShareEnvelopeCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt       DateTime @default(now())
+
+  @@index([createdByUserId])
+}
+
+model VisitTurn {
+  id           String   @id @default(uuid())
+  sessionId    String
+  session      VisitSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sequence     Int
+  clientTurnId String
+  senderUserId String
+  sender       User     @relation("VisitTurnSender", fields: [senderUserId], references: [id], onDelete: Restrict)
+  intent       String   @db.VarChar(40)
+  message      String   @db.VarChar(800)
+  emotion      String?  @db.VarChar(40)
+  topic        String?  @db.VarChar(80)
+  createdAt    DateTime @default(now())
+
+  @@unique([sessionId, sequence])
+  @@unique([sessionId, clientTurnId])
+  @@index([sessionId, createdAt])
+}
+
+model VisitSharedMoment {
+  id        String   @id @default(uuid())
+  sessionId String   @unique
+  session   VisitSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  title     String   @db.VarChar(160)
+  summary   String   @db.VarChar(600)
+  turnCount Int
+  createdAt DateTime @default(now())
 }
 
 model AdminAuditLog {
