@@ -6,7 +6,8 @@
   },
   "deploy": {
     "preDeployCommand": [
-      "node scripts/railway-migrate.mjs"
+      "node scripts/railway-migrate.mjs",
+      "node dist/src/admin/initial-superadmin.cli.js"
     ],
     "startCommand": "node dist/src/main.js",
     "healthcheckPath": "/api/meta/health",
