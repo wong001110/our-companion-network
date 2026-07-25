@@ -2,9 +2,16 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile.portal"
+    "dockerfilePath": "Dockerfile.portal",
+    "watchPatterns": [
+      "portal/**",
+      "Dockerfile.portal",
+      "deploy/railway/Caddyfile",
+      "deploy/railway/portal.railway.json"
+    ]
   },
   "deploy": {
+    "numReplicas": 1,
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 180,
     "restartPolicyType": "ON_FAILURE",
