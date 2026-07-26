@@ -72,8 +72,10 @@ The API pre-deploy stage runs, in order:
 
 ```text
 node scripts/railway-migrate.mjs
-node dist/src/admin/initial-superadmin.cli.js
+node dist/admin/initial-superadmin.cli.js
 ```
+
+The production Docker image compiles `src/` directly into `dist/`, so the application entrypoint is `dist/main.js` and administrative CLIs are under `dist/admin/`.
 
 Database behavior:
 
