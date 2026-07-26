@@ -108,6 +108,14 @@ jobs:
       - name: Fail on API Docker build error
         if: steps.api_docker_build.outcome == 'failure'
         run: tail -n 200 api-docker-build.log && exit 1
+      - name: Verify Prisma engine inside API image
+        if: steps.api_docker_build.outcome == 'success'
+        run: |
+          docker run --rm \
+            --add-host=host.docker.internal:host-gateway \
+            --env DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/railway_deployment_test?schema=public \
+            our-companion-network-api:ci \
+            node scripts/railway-migrate.mjs
 
   portal:
     runs-on: ubuntu-latest
