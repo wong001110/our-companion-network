@@ -17,6 +17,30 @@ export function migrationAction({ hasMigrationTable, applicationTableCount }) {
   return 'refuse';
 }
 
+export function validateDatabaseUrl(value) {
+  const databaseUrl = value?.trim();
+
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required. In Railway, add it to network-api as a Reference Variable from the PostgreSQL service.',
+    );
+  }
+
+  if (databaseUrl.includes('${{')) {
+    throw new Error(
+      'DATABASE_URL contains an unresolved Railway reference. Remove the plain-text value and use Variables → Add Reference Variable → <PostgreSQL service> → DATABASE_URL.',
+    );
+  }
+
+  if (!databaseUrl.startsWith('postgresql://') && !databaseUrl.startsWith('postgres://')) {
+    throw new Error(
+      'DATABASE_URL must resolve to a PostgreSQL URL beginning with postgresql:// or postgres://. Configure it as a Railway Reference Variable from the PostgreSQL service; do not paste a service reference as ordinary text.',
+    );
+  }
+
+  return databaseUrl;
+}
+
 export function listMigrationNames(migrationsRoot = path.join(process.cwd(), 'prisma', 'migrations')) {
   if (!fs.existsSync(migrationsRoot)) return [];
   return fs.readdirSync(migrationsRoot, { withFileTypes: true })
@@ -53,9 +77,8 @@ async function readDatabaseState(client) {
 }
 
 async function main() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL is required for deployment migrations.');
-  }
+  process.env.DATABASE_URL = validateDatabaseUrl(process.env.DATABASE_URL);
+
   if (!fs.existsSync(prismaExecutable)) {
     throw new Error(`Prisma CLI was not found at ${prismaExecutable}.`);
   }
