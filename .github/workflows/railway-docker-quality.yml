@@ -10,6 +10,7 @@ on:
       - 'scripts/railway-migrate.mjs'
       - 'scripts/railway-migrate.test.mjs'
       - 'scripts/railway-dockerfile.test.mjs'
+      - 'scripts/railway-caddyfile.test.mjs'
       - 'src/main.ts'
       - 'prisma/**'
       - 'portal/**'
@@ -25,6 +26,7 @@ on:
       - 'scripts/railway-migrate.mjs'
       - 'scripts/railway-migrate.test.mjs'
       - 'scripts/railway-dockerfile.test.mjs'
+      - 'scripts/railway-caddyfile.test.mjs'
       - 'src/main.ts'
       - 'prisma/**'
       - 'portal/**'
@@ -61,7 +63,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - run: node --test scripts/railway-migrate.test.mjs scripts/railway-dockerfile.test.mjs
+      - run: node --test scripts/railway-migrate.test.mjs scripts/railway-dockerfile.test.mjs scripts/railway-caddyfile.test.mjs
       - name: Bootstrap an empty database
         run: node scripts/railway-migrate.mjs
       - name: Verify migration bootstrap is idempotent
@@ -176,17 +178,60 @@ jobs:
         env:
           DOCKER_BUILDKIT: '1'
         run: docker build --file Dockerfile.portal --tag our-companion-network-portal:ci .
-      - name: Smoke Portal container and SPA fallback
+      - name: Smoke Portal container, API proxy and SPA fallback
         run: |
+          cat > /tmp/mock-portal-api.mjs <<'NODE'
+          import http from 'node:http';
+
+          const server = http.createServer((request, response) => {
+            const chunks = [];
+            request.on('data', (chunk) => chunks.push(chunk));
+            request.on('end', () => {
+              if (request.method === 'POST' && request.url === '/api/test-login') {
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end(JSON.stringify({
+                  ok: true,
+                  method: request.method,
+                  path: request.url,
+                  body: Buffer.concat(chunks).toString('utf8'),
+                }));
+                return;
+              }
+
+              response.writeHead(404, { 'content-type': 'text/plain' });
+              response.end('not found');
+            });
+          });
+
+          server.listen(19001, '0.0.0.0');
+          NODE
+
+          node /tmp/mock-portal-api.mjs > mock-portal-api.log 2>&1 &
+          MOCK_API_PID=$!
+
           docker run --detach --name portal-smoke --publish 18080:8080 \
+            --add-host=host.docker.internal:host-gateway \
             --env PORT=8080 \
-            --env API_ORIGIN=http://127.0.0.1:3001 \
+            --env API_ORIGIN=http://host.docker.internal:19001 \
             our-companion-network-portal:ci
-          trap 'docker logs portal-smoke || true; docker rm --force portal-smoke || true' EXIT
+
+          trap 'kill $MOCK_API_PID || true; cat mock-portal-api.log || true; docker logs portal-smoke || true; docker rm --force portal-smoke || true' EXIT
+
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:18080/healthz | grep --quiet ok; then
               break
             fi
             sleep 1
           done
+
           curl --fail --silent http://127.0.0.1:18080/login | grep --quiet '<div id="root"></div>'
+
+          PROXY_RESPONSE="$(curl --fail --silent \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --data '{"email":"caretaker@example.test","password":"test-password"}' \
+            http://127.0.0.1:18080/api/test-login)"
+
+          printf '%s' "$PROXY_RESPONSE" | grep --quiet '"ok":true'
+          printf '%s' "$PROXY_RESPONSE" | grep --quiet '"method":"POST"'
+          printf '%s' "$PROXY_RESPONSE" | grep --quiet '"path":"/api/test-login"'

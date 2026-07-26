@@ -1,23 +1,26 @@
 :{$PORT:8080} {
   encode zstd gzip
 
-  respond /healthz "ok" 200
-
-  @api path /api/*
-  reverse_proxy @api {$API_ORIGIN} {
-    header_up X-Forwarded-Proto {scheme}
-    header_up X-Forwarded-Host {host}
-  }
-
-  @socket path /socket.io/*
-  reverse_proxy @socket {$API_ORIGIN} {
-    header_up X-Forwarded-Proto {scheme}
-    header_up X-Forwarded-Host {host}
-  }
-
   root * /srv
-  try_files {path} /index.html
-  file_server
+
+  # Preserve routing order: API and Socket.IO requests must be proxied before
+  # the SPA fallback rewrites unknown paths to /index.html.
+  route {
+    respond /healthz "ok" 200
+
+    reverse_proxy /api/* {$API_ORIGIN} {
+      header_up X-Forwarded-Proto {scheme}
+      header_up X-Forwarded-Host {host}
+    }
+
+    reverse_proxy /socket.io/* {$API_ORIGIN} {
+      header_up X-Forwarded-Proto {scheme}
+      header_up X-Forwarded-Host {host}
+    }
+
+    try_files {path} /index.html
+    file_server
+  }
 
   header {
     X-Content-Type-Options nosniff
