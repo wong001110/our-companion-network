@@ -1,0 +1,122 @@
+name: Portal Auth Quality
+
+on:
+  pull_request:
+    paths:
+      - 'portal/src/features/auth/**'
+      - 'portal/src/lib/api.ts'
+      - 'deploy/railway/Caddyfile'
+      - 'Dockerfile.portal'
+      - '.github/workflows/portal-auth-quality.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'portal/src/features/auth/**'
+      - 'portal/src/lib/api.ts'
+      - 'deploy/railway/Caddyfile'
+      - 'Dockerfile.portal'
+      - '.github/workflows/portal-auth-quality.yml'
+
+jobs:
+  portal-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci --prefix portal
+      - run: npm run portal:typecheck
+      - run: npm run portal:test
+      - run: npm run portal:build
+      - name: Build Portal image
+        run: docker build --file Dockerfile.portal --tag our-companion-network-portal:auth-ci .
+      - name: Verify login cookies and session through Caddy
+        run: |
+          cat > /tmp/mock-auth-api.mjs <<'NODE'
+          import http from 'node:http';
+
+          const user = {
+            id: 'admin-1',
+            uid: 'OC-ADMIN01',
+            email: 'admin@example.test',
+            username: 'admin',
+            friendCode: 'A1B2C3D4',
+            role: 'SUPERADMIN',
+          };
+
+          const server = http.createServer((request, response) => {
+            const chunks = [];
+            request.on('data', (chunk) => chunks.push(chunk));
+            request.on('end', () => {
+              if (request.method === 'POST' && request.url === '/api/portal/auth/login') {
+                response.setHeader('content-type', 'application/json');
+                response.setHeader('set-cookie', [
+                  'oc_access=mock-access; Path=/api; HttpOnly; SameSite=Strict',
+                  'oc_refresh=mock-refresh; Path=/api/portal/auth; HttpOnly; SameSite=Strict',
+                  'oc_device=mock-device; Path=/api/portal/auth; HttpOnly; SameSite=Strict',
+                  'oc_csrf=mock-csrf; Path=/; SameSite=Strict',
+                ]);
+                response.end(JSON.stringify({ data: { user } }));
+                return;
+              }
+
+              if (request.method === 'GET' && request.url === '/api/portal/auth/session') {
+                const cookie = request.headers.cookie ?? '';
+                if (!cookie.includes('oc_access=mock-access')) {
+                  response.writeHead(401, { 'content-type': 'application/json' });
+                  response.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Missing access cookie' } }));
+                  return;
+                }
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end(JSON.stringify({ data: user }));
+                return;
+              }
+
+              response.writeHead(404, { 'content-type': 'text/plain' });
+              response.end('not found');
+            });
+          });
+
+          server.listen(19002, '0.0.0.0');
+          NODE
+
+          node /tmp/mock-auth-api.mjs > mock-auth-api.log 2>&1 &
+          MOCK_API_PID=$!
+
+          docker run --detach --name portal-auth-smoke --publish 18082:8080 \
+            --add-host=host.docker.internal:host-gateway \
+            --env PORT=8080 \
+            --env API_ORIGIN=http://host.docker.internal:19002 \
+            our-companion-network-portal:auth-ci
+
+          trap 'kill $MOCK_API_PID || true; cat mock-auth-api.log || true; docker logs portal-auth-smoke || true; docker rm --force portal-auth-smoke || true' EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18082/healthz > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          LOGIN_RESPONSE="$(curl --fail --silent \
+            --cookie-jar /tmp/portal-auth-cookies \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --data '{"email":"admin@example.test","password":"valid-password-123"}' \
+            http://127.0.0.1:18082/api/portal/auth/login)"
+
+          printf '%s' "$LOGIN_RESPONSE" | grep --quiet '"role":"SUPERADMIN"'
+          grep --quiet 'oc_access' /tmp/portal-auth-cookies
+          grep --quiet 'oc_refresh' /tmp/portal-auth-cookies
+          grep --quiet 'oc_device' /tmp/portal-auth-cookies
+          grep --quiet 'oc_csrf' /tmp/portal-auth-cookies
+
+          SESSION_RESPONSE="$(curl --fail --silent \
+            --cookie /tmp/portal-auth-cookies \
+            http://127.0.0.1:18082/api/portal/auth/session)"
+
+          printf '%s' "$SESSION_RESPONSE" | grep --quiet '"email":"admin@example.test"'
+          printf '%s' "$SESSION_RESPONSE" | grep --quiet '"role":"SUPERADMIN"'
