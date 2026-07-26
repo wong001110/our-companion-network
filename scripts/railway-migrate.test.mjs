@@ -21,5 +21,5 @@ test('Railway API config uses one ordered pre-deploy command', () => {
 
   assert.ok(Array.isArray(commands));
   assert.equal(commands.length, 1);
-  assert.match(commands[0], /node scripts\/railway-migrate\.mjs && node dist\/src\/admin\/initial-superadmin\.cli\.js/);
+  assert.match(commands[0], /node scripts\/railway-migrate\.mjs && node dist\/admin\/initial-superadmin\.cli\.js/);
 });
