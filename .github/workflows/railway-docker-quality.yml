@@ -108,6 +108,11 @@ jobs:
       - name: Fail on API Docker build error
         if: steps.api_docker_build.outcome == 'failure'
         run: tail -n 200 api-docker-build.log && exit 1
+      - name: Verify compiled API entrypoints inside image
+        if: steps.api_docker_build.outcome == 'success'
+        run: |
+          docker run --rm --entrypoint sh our-companion-network-api:ci -c \
+            'test -f /app/dist/main.js && test -f /app/dist/admin/initial-superadmin.cli.js'
       - name: Verify Prisma engine inside API image
         if: steps.api_docker_build.outcome == 'success'
         run: |
@@ -116,6 +121,27 @@ jobs:
             --env DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/railway_deployment_test?schema=public \
             our-companion-network-api:ci \
             node scripts/railway-migrate.mjs
+      - name: Smoke production API container entrypoint
+        if: steps.api_docker_build.outcome == 'success'
+        run: |
+          docker run --detach --name api-container-smoke --publish 18081:3001 \
+            --add-host=host.docker.internal:host-gateway \
+            --env PORT=3001 \
+            --env NODE_ENV=production \
+            --env DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/railway_deployment_test?schema=public \
+            --env JWT_SECRET=railway-api-quality-access-secret-32 \
+            --env JWT_REFRESH_SECRET=railway-api-quality-refresh-secret-32 \
+            --env PORTAL_ORIGINS=http://localhost:4173 \
+            --env PORTAL_COOKIE_SECURE=false \
+            our-companion-network-api:ci
+          trap 'docker logs api-container-smoke || true; docker rm --force api-container-smoke || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18081/api/meta/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
 
   portal:
     runs-on: ubuntu-latest

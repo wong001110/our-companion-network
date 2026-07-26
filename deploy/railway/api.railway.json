@@ -16,9 +16,9 @@
   "deploy": {
     "numReplicas": 1,
     "preDeployCommand": [
-      "node scripts/railway-migrate.mjs && node dist/src/admin/initial-superadmin.cli.js"
+      "node scripts/railway-migrate.mjs && node dist/admin/initial-superadmin.cli.js"
     ],
-    "startCommand": "node dist/src/main.js",
+    "startCommand": "node dist/main.js",
     "healthcheckPath": "/api/meta/health",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",

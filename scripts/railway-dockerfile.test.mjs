@@ -27,3 +27,15 @@ test('Dockerfile.api installs OpenSSL before generating Prisma Client', () => {
     'OpenSSL must be installed before Prisma Client generation so Bookworm selects debian-openssl-3.0.x',
   );
 });
+
+test('Railway API runtime paths match the Docker build output', () => {
+  const dockerfile = fs.readFileSync('Dockerfile.api', 'utf8');
+  const config = JSON.parse(fs.readFileSync('deploy/railway/api.railway.json', 'utf8'));
+  const preDeployCommand = config.deploy?.preDeployCommand?.[0];
+
+  assert.match(dockerfile, /CMD \["node", "dist\/main\.js"\]/);
+  assert.equal(config.deploy?.startCommand, 'node dist/main.js');
+  assert.match(preDeployCommand, /node dist\/admin\/initial-superadmin\.cli\.js/);
+  assert.doesNotMatch(config.deploy?.startCommand ?? '', /dist\/src\//);
+  assert.doesNotMatch(preDeployCommand ?? '', /dist\/src\//);
+});
