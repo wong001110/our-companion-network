@@ -47,9 +47,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
         '/api/portal/auth/login',
         { method: 'POST', ...jsonBody({ email, password }) },
       );
-      const session = await refreshUser();
-      if (!session) throw new Error('The session could not be started.');
-      return result.user.role ? result.user : session;
+
+      // A successful login response is already the authenticated session
+      // boundary. Do not make an immediate second request and incorrectly
+      // reject the login when cookie propagation or the session endpoint has
+      // a transient failure. The normal bootstrap session check still
+      // validates the secure cookie whenever the Portal is opened or reloaded.
+      setUser(result.user);
+      return result.user;
     },
     async logout() {
       try {
