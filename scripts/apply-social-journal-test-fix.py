@@ -9,6 +9,7 @@ new = '''      visitInvitation: cursorModel([]),
       visitSession: cursorModel([]),
       companionRelationship: cursorModel([]),
       discovery: cursorModel([]),'''
-if old not in source:
-    raise SystemExit('portal export fixture anchor not found')
-path.write_text(source.replace(old, new, 1), encoding='utf-8')
+count = source.count(old)
+if count != 2:
+    raise SystemExit(f'expected 2 portal export fixture anchors, found {count}')
+path.write_text(source.replace(old, new), encoding='utf-8')
