@@ -5,7 +5,7 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 
 @Catch()
@@ -13,6 +13,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
+    const requestId = randomUUID();
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Internal server error';
@@ -26,17 +28,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
           ? exceptionResponse
           : (exceptionResponse as any).message || message;
       code = this.errorCode(status, exceptionResponse);
-    } else if (process.env.OUR_COMPANION_SMOKE_TEST === '1') {
+    } else {
       const diagnostic = exception instanceof Error ? exception.message : 'Unknown request exception';
-      // The full smoke harness needs a bounded, credential-redacted diagnostic for unexpected 500s.
-      console.error(`[smoke] unexpected request failure: ${diagnostic.replace(/\w+:\/\/[^\s]+/g, '[REDACTED_URL]').slice(0, 500)}`);
+      // Log only a bounded, credential-redacted operational diagnostic. The
+      // request ID lets Railway logs be correlated without exposing a Prisma
+      // error, SQL detail, or user data to the desktop client.
+      const route = request.route?.path ?? request.path;
+      console.error(`[api] requestId=${requestId} ${request.method} ${route} unexpected failure: ${diagnostic.replace(/\w+:\/\/[^\s]+/g, '[REDACTED_URL]').slice(0, 500)}`);
     }
 
     response.status(status).json({
       error: {
         code,
         message: Array.isArray(message) ? message.join(', ') : message,
-        requestId: randomUUID(),
+        requestId,
       },
     });
   }
