@@ -136,6 +136,22 @@ export class PortalController {
     return this.portal.getVisit(user.id, id);
   }
 
+  @Get('relationships')
+  relationships(
+    @CurrentUser() user: UserPayload,
+    @Query() query: PortalListQueryDto,
+  ) {
+    return this.portal.listRelationships(user.id, query);
+  }
+
+  @Get('relationships/:id')
+  relationship(
+    @CurrentUser() user: UserPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.portal.getRelationship(user.id, id);
+  }
+
   @Get('devices')
   devices(
     @CurrentUser() user: UserPayload,

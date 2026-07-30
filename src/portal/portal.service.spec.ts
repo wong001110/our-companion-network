@@ -488,6 +488,7 @@ describe('PortalService security projections', () => {
       companionAssetFile: cursorModel([]),
       visitInvitation: cursorModel([]),
       visitSession: cursorModel([]),
+      companionRelationship: cursorModel([]),
       discovery: cursorModel([]),
       deviceSession: cursorModel([]),
     };
@@ -576,6 +577,7 @@ describe('PortalService security projections', () => {
       companionAssetFile: assetFiles,
       visitInvitation: cursorModel([]),
       visitSession: cursorModel([]),
+      companionRelationship: cursorModel([]),
       notification: cursorModel([{
         id: 'notification-1',
         data: {

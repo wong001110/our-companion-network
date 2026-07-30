@@ -502,6 +502,69 @@ export class FriendService {
     });
   }
 
+  async getSocialOverview(userId: string) {
+    const friendsPromise = this.getFriends(userId);
+    const [friends, incoming, outgoing, blocked, incomingVisits, outgoingVisits, visitSessions] = await Promise.all([
+      friendsPromise,
+      this.getIncomingRequests(userId),
+      this.getOutgoingRequests(userId),
+      this.prisma.blockedUser.findMany({
+        where: { blockerId: userId },
+        select: {
+          createdAt: true,
+          blocked: { select: { id: true, uid: true, username: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.visits?.listInvitations(userId, 'incoming') ?? Promise.resolve([]),
+      this.visits?.listInvitations(userId, 'outgoing') ?? Promise.resolve([]),
+      this.visits?.listSessions(userId) ?? Promise.resolve([]),
+    ]);
+    const presence = friends.length
+      ? await this.prisma.presence.findMany({
+          where: { userId: { in: friends.map((friend) => friend.userId) } },
+          select: { userId: true, status: true, updatedAt: true },
+        })
+      : [];
+    const presenceByUser = new Map(presence.map((item) => [item.userId, item]));
+    return {
+      friends: friends.map((friend) => ({
+        ...friend,
+        presence: presenceByUser.get(friend.userId)?.status ?? 'offline',
+        presenceUpdatedAt: presenceByUser.get(friend.userId)?.updatedAt ?? null,
+      })),
+      incomingRequests: incoming.map((request) => ({
+        id: request.id,
+        direction: 'incoming' as const,
+        userId: request.sender.id,
+        username: request.sender.username,
+        uid: request.sender.uid,
+        friendCode: request.sender.friendCode,
+        status: 'pending' as const,
+        createdAt: request.createdAt,
+      })),
+      outgoingRequests: outgoing.map((request) => ({
+        id: request.id,
+        direction: 'outgoing' as const,
+        userId: request.receiver.id,
+        username: request.receiver.username,
+        uid: request.receiver.uid,
+        friendCode: request.receiver.friendCode,
+        status: 'pending' as const,
+        createdAt: request.createdAt,
+      })),
+      blockedUsers: blocked.map((item) => ({
+        userId: item.blocked.id,
+        username: item.blocked.username,
+        uid: item.blocked.uid,
+        blockedAt: item.createdAt,
+      })),
+      visitInvitations: { incoming: incomingVisits, outgoing: outgoingVisits },
+      visitSessions,
+      synchronizedAt: new Date().toISOString(),
+    };
+  }
+
   async removeFriend(userId: string, friendId: string) {
     const friendship = await this.prisma.friendship.findFirst({
       where: {

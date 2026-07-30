@@ -36,6 +36,12 @@ interface Visit {
   durationSeconds?: number | null;
   createdAt: string;
   updatedAt: string;
+  visitorOwner?: { id: string; username: string; profile?: { displayName?: string | null } | null };
+  host?: { id: string; username: string; profile?: { displayName?: string | null } | null };
+  hostNetworkCompanion?: { id: string; name: string } | null;
+  socialShare?: { id: string; title: string; summary: string; tags: string[]; sourceUrl?: string | null; createdAt: string } | null;
+  socialTurns?: Array<{ id: string; sequence: number; senderUserId: string; intent: string; message: string; emotion?: string | null; topic?: string | null; createdAt: string }>;
+  sharedMoment?: { id: string; title: string; summary: string; turnCount: number; createdAt: string } | null;
 }
 
 export function VisitsPage() {
@@ -150,6 +156,38 @@ function VisitDetail({ visit }: { visit: Visit }) {
           <div><dt>End reason</dt><dd>{sentenceCase(visit.endReason || 'Not ended')}</dd></div>
         </dl>
       </PaperCard>
+      {visit.socialShare && <PaperCard>
+        <p className="eyebrow">Approved topic</p>
+        <h2>{visit.socialShare.title}</h2>
+        <p>{visit.socialShare.summary}</p>
+        {visit.socialShare.tags.length > 0 && <p>{visit.socialShare.tags.join(' · ')}</p>}
+        {visit.socialShare.sourceUrl && <a className="text-link" href={visit.socialShare.sourceUrl} target="_blank" rel="noreferrer">Open original source ↗</a>}
+      </PaperCard>}
+      {visit.sharedMoment && <PaperCard>
+        <p className="eyebrow">Shared Moment</p>
+        <h2>{visit.sharedMoment.title}</h2>
+        <p>{visit.sharedMoment.summary}</p>
+        <small>{visit.sharedMoment.turnCount} turns</small>
+      </PaperCard>}
+      {visit.socialTurns && visit.socialTurns.length > 0 && <PaperCard>
+        <p className="eyebrow">Companion conversation</p>
+        <h2>What they talked about</h2>
+        <div className="social-transcript">
+          {visit.socialTurns.map((turn) => {
+            const visitorName = visit.networkCompanion?.name || visit.companionName || 'Visitor Companion';
+            const hostName = visit.hostNetworkCompanion?.name || 'Host Companion';
+            return <article className="travel-entry" key={turn.id}>
+              <span className="timeline-pin"><Sparkles /></span>
+              <div>
+                <strong>{turn.senderUserId === visit.visitorOwnerUserId ? visitorName : hostName}</strong>
+                <Stamp tone="neutral">{turn.intent}</Stamp>
+                <p>{turn.message}</p>
+                <small>{turn.emotion ? `${sentenceCase(turn.emotion)} · ` : ''}{formatDate(turn.createdAt)}</small>
+              </div>
+            </article>;
+          })}
+        </div>
+      </PaperCard>}
       <PaperCard>
         <p className="eyebrow">Timeline</p>
         <h2>Journey milestones</h2>

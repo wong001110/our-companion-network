@@ -10,6 +10,7 @@ const ProfilePage = lazy(() => import('../pages/ProfilePage').then((module) => (
 const CompanionPage = lazy(() => import('../pages/CompanionPage').then((module) => ({ default: module.CompanionPage })));
 const FriendsPage = lazy(() => import('../pages/FriendsPage').then((module) => ({ default: module.FriendsPage })));
 const VisitsPage = lazy(() => import('../pages/VisitsPage').then((module) => ({ default: module.VisitsPage })));
+const RelationshipsPage = lazy(() => import('../pages/RelationshipsPage').then((module) => ({ default: module.RelationshipsPage })));
 const SecurityPage = lazy(() => import('../pages/SecurityPage').then((module) => ({ default: module.SecurityPage })));
 const DataPage = lazy(() => import('../pages/DataPage').then((module) => ({ default: module.DataPage })));
 const AdminOverviewPage = lazy(() => import('../pages/admin/AdminOverviewPage').then((module) => ({ default: module.AdminOverviewPage })));
@@ -36,6 +37,8 @@ export function App() {
           <Route path="friends" element={<FriendsPage />} />
           <Route path="visits" element={<VisitsPage />} />
           <Route path="visits/:id" element={<VisitsPage />} />
+          <Route path="relationships" element={<RelationshipsPage />} />
+          <Route path="relationships/:id" element={<RelationshipsPage />} />
           <Route path="security" element={<SecurityPage />} />
           <Route path="data" element={<DataPage />} />
         </Route>

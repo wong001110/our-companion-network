@@ -41,8 +41,9 @@ export class VisitSocialController {
 
   @Post('turns')
   @SocialRateLimit('visit_mutation')
-  appendTurn(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AppendVisitTurnDto) {
-    return this.social.appendTurn(user.id, id, dto);
+  async appendTurn(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AppendVisitTurnDto) {
+    await this.social.appendTurn(user.id, id, dto);
+    return this.social.getState(user.id, id);
   }
 
   @Post('shared-moment')
