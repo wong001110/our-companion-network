@@ -1,0 +1,71 @@
+name: Apply Shareable Topics Random Visits
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.head_ref == 'agent/shareable-topics-random-visits'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: our_companion_network_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/our_companion_network_test?schema=public
+      JWT_SECRET: shareable-topics-access-secret-32
+      JWT_REFRESH_SECRET: shareable-topics-refresh-secret-32
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/shareable-topics-random-visits
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix portal ci
+      - run: python scripts/apply-shareable-topics-random-visits.py
+      - run: npx prisma format
+      - run: npm run prisma:generate
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - run: npm run portal:typecheck
+      - run: npm run portal:lint
+      - run: npm run portal:test -- --run
+      - run: npm run portal:build
+      - name: Validate migration from main
+        run: |
+          git show origin/main:prisma/schema.prisma > /tmp/main-schema.prisma
+          npx prisma db push --schema /tmp/main-schema.prisma --skip-generate
+          psql "${DATABASE_URL%%\?*}" -v ON_ERROR_STOP=1 -f prisma/migrations/20260731030000_shareable_topics_random_visits/migration.sql
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - name: Remove one-time integration files
+        run: |
+          rm scripts/apply-shareable-topics-random-visits.py
+          rm .github/workflows/apply-shareable-topics-random-visits.yml
+      - name: Commit integrated product changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "feat: add shareable topics and random visits"
+          git push origin HEAD:agent/shareable-topics-random-visits
