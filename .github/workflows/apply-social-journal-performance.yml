@@ -1,0 +1,44 @@
+name: Apply Social Journal Performance
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.head_ref == 'agent/social-journal-performance'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/social-journal-performance
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix portal ci
+      - run: python scripts/apply-social-journal-performance.py
+      - run: npx prisma format
+      - run: npm run prisma:generate
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - run: npm run portal:typecheck
+      - run: npm run portal:test -- --run
+      - run: npm run portal:build
+      - name: Remove one-time integration files
+        run: |
+          rm scripts/apply-social-journal-performance.py
+          rm .github/workflows/apply-social-journal-performance.yml
+      - name: Commit integrated product changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "feat: add Social Journal and relationship insights"
+          git push origin HEAD:agent/social-journal-performance
