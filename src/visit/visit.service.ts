@@ -11,6 +11,11 @@ const SESSION_LIVE = ['preparing', 'ready', 'active', 'ending'];
 const SESSION_HEARTBEAT = ['preparing', 'ready', 'active'];
 const SESSION_TERMINAL = ['ended', 'cancelled', 'failed'];
 const MAX_CONCURRENT_HOST_VISITORS = 2;
+// Acceptance deliberately locks the participants, invitation, and Companion
+// rows to preserve capacity and snapshot invariants. Railway/Postgres can take
+// longer than Prisma's five-second interactive-transaction default while a
+// concurrent Visit operation releases one of those locks.
+const VISIT_ACCEPT_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 15_000 } as const;
 const INVITATION_SELECT = { id: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, companionName: true, companionDescription: true, companionTags: true, status: true, expiresAt: true, respondedAt: true, cancelledAt: true, createdAt: true, updatedAt: true } as const;
 const SESSION_SELECT = { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, state: true, visitorOwnerReadyAt: true, hostReadyAt: true, readyAt: true, startedAt: true, endedAt: true, endReason: true, failureCode: true, createdAt: true, updatedAt: true } as const;
 
@@ -90,7 +95,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
         networkCompanionId: invitation.networkCompanionId, assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id, state: 'preparing',
       }, select: SESSION_SELECT });
       return { invitation: accepted, session, changed: true, expired: false };
-    });
+    }, VISIT_ACCEPT_TRANSACTION_OPTIONS);
     if (result.expired) {
       this.publishInvitation(result.invitation, 'visit.invitation.updated');
       throw new ConflictException({ code: 'VISIT_INVITATION_EXPIRED', message: 'Visit invitation expired' });

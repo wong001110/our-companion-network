@@ -130,8 +130,10 @@ describe('VisitService S4 lifecycle and privacy', () => {
   it('returns an already accepted invitation and its existing single session', async () => {
     const existingSession = session('preparing');
     const tx = { $queryRaw: jest.fn(), visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation('accepted'), session: existingSession }) } };
-    const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
+    const prisma = { $transaction: jest.fn((operation) => operation(tx)) };
+    const { instance } = service(prisma);
     await expect(instance.acceptInvitation(host, invitationId)).resolves.toMatchObject({ invitation: { status: 'accepted' }, session: { id: sessionId, state: 'preparing' } });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { maxWait: 10_000, timeout: 15_000 });
   });
 
   it('locks participant users before locking the invitation during acceptance', async () => {
