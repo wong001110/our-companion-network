@@ -44,6 +44,7 @@ jobs:
       - run: npm --prefix portal ci
       - run: python scripts/patch-shareable-topics-integration.py
       - run: python scripts/apply-shareable-topics-random-visits.py
+      - run: python scripts/apply-shareable-topics-test-fixes.py
       - run: npx prisma format
       - run: npm run prisma:generate
       - run: npm run lint
@@ -62,7 +63,9 @@ jobs:
       - name: Remove one-time integration files
         run: |
           rm scripts/patch-shareable-topics-integration.py
+          rm scripts/apply-shareable-topics-test-fixes.py
           rm scripts/apply-shareable-topics-random-visits.py
+          rm .github/shareable-topics-retry
           rm .github/workflows/apply-shareable-topics-random-visits.yml
       - name: Commit integrated product changes
         run: |
