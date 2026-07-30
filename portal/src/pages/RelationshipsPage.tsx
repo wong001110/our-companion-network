@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
-import { HeartHandshake, MessageCircle, Sparkles } from 'lucide-react';
+import { HeartHandshake, MessageCircle } from 'lucide-react';
 import { api, type PageEnvelope } from '../lib/api';
 import { formatDate, sentenceCase } from '../lib/format';
 import { EmptyState, ErrorState, PageHeader, Pagination, PaperCard, SkeletonGrid, Stamp } from '../components/ui';
@@ -13,8 +13,6 @@ interface Relationship {
   visitCount: number;
   interactionCount: number;
   totalTurnCount: number;
-  rapportScore: number;
-  topicAffinityScore: number;
   sharedTopicTags: string[];
   firstMetAt: string;
   lastInteractionAt: string;
