@@ -6,6 +6,8 @@ import {
   PortalDataDeleteDto,
 } from './dto/portal-auth.dto';
 import { Readable } from 'node:stream';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 type ExportFindManyArgs = {
   take: number;
@@ -34,6 +36,16 @@ async function readJsonStream(stream: Readable): Promise<Record<string, any>> {
 }
 
 describe('PortalService security projections', () => {
+  it('keeps host Companion snapshots on sessions and hides raw relationship scores from Portal projections', () => {
+    const source = readFileSync(join(__dirname, 'portal.service.ts'), 'utf8');
+    const invitation = source.slice(source.indexOf('const PORTAL_INVITATION_SELECT'), source.indexOf('const PORTAL_SESSION_SELECT'));
+    const relationship = source.slice(source.indexOf('const PORTAL_RELATIONSHIP_SELECT'), source.indexOf('const EXPORT_RELATIONSHIP_SELECT'));
+    expect(invitation).not.toContain('hostNetworkCompanionId');
+    expect(source.slice(source.indexOf('const PORTAL_SESSION_SELECT'), source.indexOf('const PORTAL_SESSION_DETAIL_SELECT'))).toContain('hostNetworkCompanionId');
+    expect(relationship).not.toContain('rapportScore');
+    expect(relationship).not.toContain('topicAffinityScore');
+  });
+
   it('builds the summary exclusively from the signed-in user’s records', async () => {
     const userFindUnique = jest.fn().mockResolvedValue({
       presence: { status: 'online', lastSeenAt: null },

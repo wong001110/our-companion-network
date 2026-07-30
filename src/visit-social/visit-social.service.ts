@@ -240,21 +240,25 @@ export class VisitSocialService {
   }
 
   private async ensureMoment(tx: Prisma.TransactionClient, sessionId: string, turnCount: number, share: ShareRow): Promise<MomentRow> {
+    const id = randomUUID();
+    const title = `Shared: ${share.title}`.slice(0, 160);
+    const summary = `The Companions shared “${share.title}” and exchanged ${turnCount} ${turnCount === 1 ? 'turn' : 'turns'}.`.slice(0, 600);
+    const inserted = await tx.$queryRaw<MomentRow[]>`
+      INSERT INTO "VisitSharedMoment" ("id", "sessionId", "title", "summary", "turnCount", "createdAt")
+      VALUES (${id}, ${sessionId}, ${title}, ${summary}, ${turnCount}, NOW())
+      ON CONFLICT ("sessionId") DO NOTHING
+      RETURNING "id", "sessionId", "title", "summary", "turnCount", "createdAt"
+    `;
+    if (inserted[0]) {
+      await this.updateRelationship(tx, sessionId, turnCount, share);
+      return inserted[0];
+    }
     const existing = await tx.$queryRaw<MomentRow[]>`
       SELECT "id", "sessionId", "title", "summary", "turnCount", "createdAt"
       FROM "VisitSharedMoment" WHERE "sessionId" = ${sessionId}
     `;
-    if (existing[0]) return existing[0];
-    const id = randomUUID();
-    const title = `Shared: ${share.title}`.slice(0, 160);
-    const summary = `The Companions shared “${share.title}” and exchanged ${turnCount} ${turnCount === 1 ? 'turn' : 'turns'}.`.slice(0, 600);
-    const rows = await tx.$queryRaw<MomentRow[]>`
-      INSERT INTO "VisitSharedMoment" ("id", "sessionId", "title", "summary", "turnCount", "createdAt")
-      VALUES (${id}, ${sessionId}, ${title}, ${summary}, ${turnCount}, NOW())
-      RETURNING "id", "sessionId", "title", "summary", "turnCount", "createdAt"
-    `;
-    await this.updateRelationship(tx, sessionId, turnCount, share);
-    return rows[0];
+    if (!existing[0]) throw new ConflictException({ code: 'VISIT_SHARED_MOMENT_RACE', message: 'The Shared Moment could not be reconciled' });
+    return existing[0];
   }
 
   private async updateRelationship(tx: Prisma.TransactionClient, sessionId: string, turnCount: number, share: ShareRow): Promise<void> {
@@ -268,6 +272,9 @@ export class VisitSocialService {
       ? share.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 5)
       : [];
     const relationshipId = randomUUID();
+    const tagArray = tags.length
+      ? Prisma.sql`ARRAY[${Prisma.join(tags)}]::text[]`
+      : Prisma.sql`ARRAY[]::text[]`;
     await tx.$executeRaw`
       INSERT INTO "CompanionRelationship" (
         "id", "companionLowId", "companionHighId", "stage", "visitCount", "interactionCount",
@@ -275,7 +282,7 @@ export class VisitSocialService {
         "firstMetAt", "lastInteractionAt", "createdAt", "updatedAt"
       ) VALUES (
         ${relationshipId}, ${companionLowId}, ${companionHighId}, 'acquainted', 1, 1,
-        ${turnCount}, 0.08, 0.05, ${tags}::text[], NOW(), NOW(), NOW(), NOW()
+        ${turnCount}, 0.08, 0.05, ${tagArray}, NOW(), NOW(), NOW(), NOW()
       )
       ON CONFLICT ("companionLowId", "companionHighId") DO UPDATE SET
         "visitCount" = "CompanionRelationship"."visitCount" + 1,

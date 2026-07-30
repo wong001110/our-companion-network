@@ -748,7 +748,7 @@ export class PortalService {
           ],
         },
         ...exportCursorPage(cursor),
-        select: PORTAL_RELATIONSHIP_SELECT,
+        select: EXPORT_RELATIONSHIP_SELECT,
       }));
     yield ',"notifications":';
     yield* this.streamExportArray((cursor) =>
@@ -1476,7 +1476,6 @@ const PORTAL_INVITATION_SELECT = {
   id: true,
   visitorOwnerUserId: true,
   hostUserId: true,
-  hostNetworkCompanionId: true,
   networkCompanionId: true,
   assetPackSnapshotId: true,
   companionName: true,
@@ -1495,6 +1494,7 @@ const PORTAL_SESSION_SELECT = {
   invitationId: true,
   visitorOwnerUserId: true,
   hostUserId: true,
+  hostNetworkCompanionId: true,
   networkCompanionId: true,
   assetPackSnapshotId: true,
   state: true,
@@ -1533,8 +1533,6 @@ const PORTAL_RELATIONSHIP_SELECT = {
   visitCount: true,
   interactionCount: true,
   totalTurnCount: true,
-  rapportScore: true,
-  topicAffinityScore: true,
   sharedTopicTags: true,
   firstMetAt: true,
   lastInteractionAt: true,
@@ -1542,6 +1540,12 @@ const PORTAL_RELATIONSHIP_SELECT = {
   updatedAt: true,
   companionLow: { select: { id: true, name: true, ownerUserId: true } },
   companionHigh: { select: { id: true, name: true, ownerUserId: true } },
+} as const;
+
+const EXPORT_RELATIONSHIP_SELECT = {
+  ...PORTAL_RELATIONSHIP_SELECT,
+  rapportScore: true,
+  topicAffinityScore: true,
 } as const;
 
 function relationshipPerspective<T extends {
