@@ -137,12 +137,17 @@ replace_once(
 )
 
 # Regression contracts for the two review findings.
+replace_once(
+    'src/portal/portal.service.spec.ts',
+    "import { Readable } from 'node:stream';",
+    "import { Readable } from 'node:stream';\nimport { readFileSync } from 'node:fs';\nimport { join } from 'node:path';",
+)
 portal_test = Path('src/portal/portal.service.spec.ts')
 portal_source = portal_test.read_text(encoding='utf-8')
 marker = "describe('PortalService security projections', () => {"
 addition = '''
   it('keeps host Companion snapshots on sessions and hides raw relationship scores from Portal projections', () => {
-    const source = require('node:fs').readFileSync(require('node:path').join(__dirname, 'portal.service.ts'), 'utf8');
+    const source = readFileSync(join(__dirname, 'portal.service.ts'), 'utf8');
     const invitation = source.slice(source.indexOf('const PORTAL_INVITATION_SELECT'), source.indexOf('const PORTAL_SESSION_SELECT'));
     const relationship = source.slice(source.indexOf('const PORTAL_RELATIONSHIP_SELECT'), source.indexOf('const EXPORT_RELATIONSHIP_SELECT'));
     expect(invitation).not.toContain('hostNetworkCompanionId');
@@ -156,12 +161,17 @@ if addition.strip() not in portal_source:
         raise SystemExit('PortalService test suite anchor not found')
     portal_test.write_text(portal_source.replace(marker, marker + addition, 1), encoding='utf-8')
 
+replace_once(
+    'src/visit-social/visit-social.service.spec.ts',
+    "import { VisitSocialService } from './visit-social.service';",
+    "import { VisitSocialService } from './visit-social.service';\nimport { readFileSync } from 'node:fs';\nimport { join } from 'node:path';",
+)
 social_test = Path('src/visit-social/visit-social.service.spec.ts')
 social_source = social_test.read_text(encoding='utf-8')
 social_marker = "describe('VisitSocialService security boundaries', () => {"
 social_addition = '''
   it('uses an insert-winner Shared Moment contract before updating relationships', () => {
-    const source = require('node:fs').readFileSync(require('node:path').join(__dirname, 'visit-social.service.ts'), 'utf8');
+    const source = readFileSync(join(__dirname, 'visit-social.service.ts'), 'utf8');
     expect(source).toContain('ON CONFLICT ("sessionId") DO NOTHING');
     expect(source).toContain('if (inserted[0])');
     expect(source.indexOf('if (inserted[0])')).toBeLessThan(source.indexOf('await this.updateRelationship'));
