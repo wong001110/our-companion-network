@@ -24,6 +24,7 @@ jobs:
       - run: npm ci
       - run: npm --prefix portal ci
       - run: python scripts/apply-social-journal-performance.py
+      - run: python scripts/apply-social-journal-test-fix.py
       - run: npx prisma format
       - run: npm run prisma:generate
       - run: npm run build
@@ -34,7 +35,9 @@ jobs:
       - name: Remove one-time integration files
         run: |
           rm scripts/apply-social-journal-performance.py
+          rm scripts/apply-social-journal-test-fix.py
           rm .github/workflows/apply-social-journal-performance.yml
+          rm .github/social-journal-pr-trigger
       - name: Commit integrated product changes
         run: |
           git config user.name github-actions[bot]
