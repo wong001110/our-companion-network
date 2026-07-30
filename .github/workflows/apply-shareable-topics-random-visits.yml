@@ -42,6 +42,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm --prefix portal ci
+      - run: python scripts/patch-shareable-topics-integration.py
       - run: python scripts/apply-shareable-topics-random-visits.py
       - run: npx prisma format
       - run: npm run prisma:generate
@@ -60,6 +61,7 @@ jobs:
           npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
       - name: Remove one-time integration files
         run: |
+          rm scripts/patch-shareable-topics-integration.py
           rm scripts/apply-shareable-topics-random-visits.py
           rm .github/workflows/apply-shareable-topics-random-visits.yml
       - name: Commit integrated product changes
