@@ -8,7 +8,7 @@ ALTER TABLE "VisitSession" ADD CONSTRAINT "VisitSession_hostNetworkCompanionId_f
 CREATE INDEX "VisitSession_hostNetworkCompanionId_state_idx"
   ON "VisitSession"("hostNetworkCompanionId", "state");
 
--- Existing Visits use the host's current published Companion as the best available snapshot.
+-- Existing Visits use the host's current active Companion as the best available snapshot.
 UPDATE "VisitSession" AS session
 SET "hostNetworkCompanionId" = owner."activeNetworkCompanionId"
 FROM "User" AS owner
@@ -25,12 +25,17 @@ CREATE TABLE "CompanionRelationship" (
   "totalTurnCount" INTEGER NOT NULL DEFAULT 0,
   "rapportScore" DOUBLE PRECISION NOT NULL DEFAULT 0,
   "topicAffinityScore" DOUBLE PRECISION NOT NULL DEFAULT 0,
-  "sharedTopicTags" TEXT[] DEFAULT ARRAY[]::TEXT[],
+  "sharedTopicTags" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   "firstMetAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "lastInteractionAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" TIMESTAMP(3) NOT NULL,
-  CONSTRAINT "CompanionRelationship_pkey" PRIMARY KEY ("id")
+  CONSTRAINT "CompanionRelationship_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "CompanionRelationship_canonical_pair_check" CHECK ("companionLowId" < "companionHighId"),
+  CONSTRAINT "CompanionRelationship_stage_check" CHECK ("stage" IN ('new', 'acquainted', 'familiar', 'friendly', 'close', 'trusted')),
+  CONSTRAINT "CompanionRelationship_score_check" CHECK (
+    "rapportScore" BETWEEN 0 AND 1 AND "topicAffinityScore" BETWEEN 0 AND 1
+  )
 );
 
 CREATE UNIQUE INDEX "CompanionRelationship_companionLowId_companionHighId_key"
