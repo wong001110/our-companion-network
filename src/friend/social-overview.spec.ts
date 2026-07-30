@@ -23,8 +23,13 @@ describe('FriendService Social overview', () => {
     };
     const service = new FriendService(prisma as never, { publishToUser: jest.fn() } as never, visits as never);
     jest.spyOn(service, 'getFriends').mockResolvedValue([{
-      userId: 'friend-1', username: 'Friend', uid: 'OC-FRIEND01', friendCode: 'FRIEND01',
-      presence: 'offline', hasPublishedCompanion: true,
+      id: 'friendship-1',
+      userId: 'friend-1',
+      username: 'Friend',
+      uid: 'OC-FRIEND01',
+      friendCode: 'FRIEND01',
+      profile: null,
+      hasPublishedCompanion: true,
     }]);
     jest.spyOn(service, 'getIncomingRequests').mockResolvedValue([{
       id: 'request-in', createdAt: new Date('2026-07-30T00:00:00.000Z'),
