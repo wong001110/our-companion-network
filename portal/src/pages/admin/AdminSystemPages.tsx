@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, Database, Radio, RefreshCw, Server, Wifi } from 'lucide-react';
+import { Activity, Database, Radio, RefreshCw, Server, Wifi, X } from 'lucide-react';
 import { api, queryString, type PageEnvelope } from '../../lib/api';
 import { formatDate, sentenceCase, shortId } from '../../lib/format';
 import { ListFilters, type ListFilterValues } from '../../components/ListFilters';
@@ -33,7 +33,13 @@ export function AdminSystemPage() {
         <div className="system-grid">
           <HealthCard icon={Server} label="API" value={query.data.api} />
           <HealthCard icon={Database} label="PostgreSQL" value={query.data.database} note={`Migration ${query.data.migrationVersion || 'unknown'}`} />
-          <HealthCard icon={Database} label="R2 Storage" value={objectStatus(query.data.r2)} note={JSON.stringify(query.data.r2)} />
+          <HealthCard
+            icon={Database}
+            label="R2 Storage"
+            value={objectStatus(query.data.r2)}
+            note={r2Summary(query.data.r2)}
+            details={typeof query.data.r2 === 'string' ? query.data.r2 : JSON.stringify(query.data.r2, null, 2)}
+          />
           <HealthCard icon={Wifi} label="WebSocket" value={String(query.data.websocket.status ?? 'unavailable')} note={`${query.data.websocket.connectionCount ?? 0} current connections`} />
           <PaperCard><p className="eyebrow">Version postcard</p><h2>Compatibility</h2><dl className="stacked-details"><div><dt>Server</dt><dd>{query.data.serverVersion}</dd></div><div><dt>Protocol</dt><dd>{query.data.protocolVersion}</dd></div><div><dt>Minimum client</dt><dd>{query.data.compatibleClientVersion}</dd></div></dl></PaperCard>
           <PaperCard><p className="eyebrow">Realtime snapshot</p><h2>Operational counters</h2><div className="count-grid">{Object.entries(query.data.websocket).map(([label, value]) => <div key={label}><strong>{String(value)}</strong><span>{sentenceCase(label)}</span></div>)}</div></PaperCard>
@@ -111,14 +117,44 @@ export function AdminAuditPage() {
   );
 }
 
-function HealthCard({ icon: Icon, label, value, note }: { icon: typeof Server; label: string; value: string; note?: string }) {
+function HealthCard({ icon: Icon, label, value, note, details }: { icon: typeof Server; label: string; value: string; note?: string; details?: string }) {
+  const [open, setOpen] = useState(false);
   const okay = ['ok', 'ready', 'enabled'].includes(value.toLowerCase());
-  return <PaperCard className="health-card"><Icon /><div><p className="eyebrow">{label}</p><h2>{sentenceCase(value)}</h2>{note && <small>{note}</small>}</div><Stamp tone={okay ? 'good' : 'warn'}>{okay ? 'Healthy' : 'Check'}</Stamp></PaperCard>;
+  return (
+    <>
+      <PaperCard className="health-card">
+        <Icon />
+        <div className="health-card__content">
+          <p className="eyebrow">{label}</p>
+          <h2>{sentenceCase(value)}</h2>
+          {note && <small className="health-card__summary" title={note}>{note}</small>}
+          {details && <Button className="health-card__details" variant="quiet" onClick={() => setOpen(true)}>View details</Button>}
+        </div>
+        <Stamp tone={okay ? 'good' : 'warn'}>{okay ? 'Healthy' : 'Check'}</Stamp>
+      </PaperCard>
+      {open && details && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+          <div className="dialog health-card-dialog" role="dialog" aria-modal="true" aria-labelledby="health-card-dialog-title">
+            <button className="dialog-close" aria-label="Close details" onClick={() => setOpen(false)}><X /></button>
+            <p className="eyebrow">System Health detail</p>
+            <h2 id="health-card-dialog-title">{label}</h2>
+            <pre>{details}</pre>
+            <div className="dialog-actions"><Button variant="quiet" onClick={() => setOpen(false)}>Close</Button></div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 function objectStatus(value: SystemHealth['r2']) {
   if (typeof value === 'string') return value;
   return value.uploadsEnabled ? 'ready' : 'unavailable';
+}
+
+function r2Summary(value: SystemHealth['r2']) {
+  if (typeof value === 'string') return value;
+  return `Configured ${value.configured ? 'yes' : 'no'} · Uploads ${value.uploadsEnabled ? 'on' : 'off'} · Downloads ${value.downloadsEnabled ? 'on' : 'off'}`;
 }
 
 function realtimeMetrics(health: SystemHealth): Array<[string, string, string]> {
