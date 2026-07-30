@@ -45,6 +45,7 @@ jobs:
       - run: python scripts/patch-shareable-topics-integration.py
       - run: python scripts/apply-shareable-topics-random-visits.py
       - run: python scripts/apply-shareable-topics-test-fixes.py
+      - run: python scripts/apply-shareable-topics-portal-fixes.py
       - run: npx prisma format
       - run: npm run prisma:generate
       - run: npm run lint
@@ -64,6 +65,7 @@ jobs:
         run: |
           rm scripts/patch-shareable-topics-integration.py
           rm scripts/apply-shareable-topics-test-fixes.py
+          rm scripts/apply-shareable-topics-portal-fixes.py
           rm scripts/apply-shareable-topics-random-visits.py
           rm .github/shareable-topics-retry
           rm .github/workflows/apply-shareable-topics-random-visits.yml
