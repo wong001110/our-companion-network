@@ -17,7 +17,7 @@ const MAX_CONCURRENT_HOST_VISITORS = 2;
 // concurrent Visit operation releases one of those locks.
 const VISIT_ACCEPT_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 15_000 } as const;
 const INVITATION_SELECT = { id: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, companionName: true, companionDescription: true, companionTags: true, status: true, expiresAt: true, respondedAt: true, cancelledAt: true, createdAt: true, updatedAt: true } as const;
-const SESSION_SELECT = { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, state: true, visitorOwnerReadyAt: true, hostReadyAt: true, readyAt: true, startedAt: true, endedAt: true, endReason: true, failureCode: true, createdAt: true, updatedAt: true } as const;
+const SESSION_SELECT = { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, hostNetworkCompanionId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, state: true, visitorOwnerReadyAt: true, hostReadyAt: true, readyAt: true, startedAt: true, endedAt: true, endReason: true, failureCode: true, createdAt: true, updatedAt: true } as const;
 
 @Injectable()
 export class VisitService implements OnModuleInit, OnModuleDestroy {
@@ -90,8 +90,13 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       if (!pack || pack.id !== invitation.assetPackSnapshotId || pack.companionId !== invitation.networkCompanionId || !['active', 'superseded'].includes(pack.status)) this.notAvailable();
       if (!supportsVisualVisit(pack.manifest)) this.visualAssetsUnavailable();
       const accepted = await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'accepted', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
+      const host = await tx.user.findUnique({
+        where: { id: invitation.hostUserId },
+        select: { activeNetworkCompanionId: true },
+      });
       const session = await tx.visitSession.create({ data: {
         invitationId: invitation.id, visitorOwnerUserId: invitation.visitorOwnerUserId, hostUserId: invitation.hostUserId,
+        hostNetworkCompanionId: host?.activeNetworkCompanionId ?? null,
         networkCompanionId: invitation.networkCompanionId, assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id, state: 'preparing',
       }, select: SESSION_SELECT });
       return { invitation: accepted, session, changed: true, expired: false };

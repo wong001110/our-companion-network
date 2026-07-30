@@ -485,7 +485,7 @@ export class PortalService {
         id,
         OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }],
       },
-      select: PORTAL_SESSION_SELECT,
+      select: PORTAL_SESSION_DETAIL_SELECT,
     });
     if (session) return { kind: 'session', ...withDuration(session) };
     const invitation = await this.prisma.visitInvitation.findFirst({
@@ -497,6 +497,67 @@ export class PortalService {
     });
     if (invitation) return { kind: 'invitation', ...invitation };
     throw new NotFoundException('Visit not found');
+  }
+
+  async listRelationships(userId: string, query: PortalListQueryDto) {
+    const page = boundedPage(query);
+    const where: Prisma.CompanionRelationshipWhereInput = {
+      OR: [
+        { companionLow: { ownerUserId: userId } },
+        { companionHigh: { ownerUserId: userId } },
+      ],
+      ...(query.search ? {
+        AND: [{ OR: [
+          { companionLow: { name: { contains: query.search.trim(), mode: 'insensitive' } } },
+          { companionHigh: { name: { contains: query.search.trim(), mode: 'insensitive' } } },
+          { sharedTopicTags: { has: query.search.trim() } },
+        ] }],
+      } : {}),
+    };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.companionRelationship.findMany({
+        where,
+        skip: page.skip,
+        take: page.take,
+        orderBy: stableOrderBy('lastInteractionAt', query.direction),
+        select: PORTAL_RELATIONSHIP_SELECT,
+      }),
+      this.prisma.companionRelationship.count({ where }),
+    ]);
+    return pageEnvelope(items.map((item) => relationshipPerspective(item, userId)), total, page);
+  }
+
+  async getRelationship(userId: string, id: string) {
+    const relationship = await this.prisma.companionRelationship.findFirst({
+      where: {
+        id,
+        OR: [
+          { companionLow: { ownerUserId: userId } },
+          { companionHigh: { ownerUserId: userId } },
+        ],
+      },
+      select: PORTAL_RELATIONSHIP_SELECT,
+    });
+    if (!relationship) throw new NotFoundException('Companion relationship not found');
+    const visits = await this.prisma.visitSession.findMany({
+      where: {
+        OR: [
+          { networkCompanionId: relationship.companionLowId, hostNetworkCompanionId: relationship.companionHighId },
+          { networkCompanionId: relationship.companionHighId, hostNetworkCompanionId: relationship.companionLowId },
+        ],
+      },
+      take: 20,
+      orderBy: stableOrderBy('updatedAt'),
+      select: {
+        id: true,
+        state: true,
+        startedAt: true,
+        endedAt: true,
+        socialShare: { select: { title: true, summary: true, tags: true, sourceUrl: true } },
+        sharedMoment: { select: { title: true, summary: true, turnCount: true, createdAt: true } },
+      },
+    });
+    return { ...relationshipPerspective(relationship, userId), visits };
   }
 
   async listDevices(userId: string, query: PortalListQueryDto) {
@@ -677,6 +738,18 @@ export class PortalService {
       }),
       withDuration,
     );
+    yield ',"companionRelationships":';
+    yield* this.streamExportArray((cursor) =>
+      this.prisma.companionRelationship.findMany({
+        where: {
+          OR: [
+            { companionLow: { ownerUserId: userId } },
+            { companionHigh: { ownerUserId: userId } },
+          ],
+        },
+        ...exportCursorPage(cursor),
+        select: EXPORT_RELATIONSHIP_SELECT,
+      }));
     yield ',"notifications":';
     yield* this.streamExportArray((cursor) =>
       this.prisma.notification.findMany({
@@ -1421,6 +1494,7 @@ const PORTAL_SESSION_SELECT = {
   invitationId: true,
   visitorOwnerUserId: true,
   hostUserId: true,
+  hostNetworkCompanionId: true,
   networkCompanionId: true,
   assetPackSnapshotId: true,
   state: true,
@@ -1433,6 +1507,59 @@ const PORTAL_SESSION_SELECT = {
   updatedAt: true,
   networkCompanion: { select: { name: true } },
 } as const;
+
+const PORTAL_SESSION_DETAIL_SELECT = {
+  ...PORTAL_SESSION_SELECT,
+  visitorOwner: { select: { id: true, username: true, profile: { select: { displayName: true } } } },
+  host: { select: { id: true, username: true, profile: { select: { displayName: true } } } },
+  hostNetworkCompanion: { select: { id: true, name: true } },
+  socialShare: {
+    select: { id: true, title: true, summary: true, tags: true, sourceUrl: true, createdAt: true },
+  },
+  socialTurns: {
+    orderBy: { sequence: 'asc' as const },
+    select: { id: true, sequence: true, senderUserId: true, intent: true, message: true, emotion: true, topic: true, createdAt: true },
+  },
+  sharedMoment: {
+    select: { id: true, title: true, summary: true, turnCount: true, createdAt: true },
+  },
+} as const;
+
+const PORTAL_RELATIONSHIP_SELECT = {
+  id: true,
+  companionLowId: true,
+  companionHighId: true,
+  stage: true,
+  visitCount: true,
+  interactionCount: true,
+  totalTurnCount: true,
+  sharedTopicTags: true,
+  firstMetAt: true,
+  lastInteractionAt: true,
+  createdAt: true,
+  updatedAt: true,
+  companionLow: { select: { id: true, name: true, ownerUserId: true } },
+  companionHigh: { select: { id: true, name: true, ownerUserId: true } },
+} as const;
+
+const EXPORT_RELATIONSHIP_SELECT = {
+  ...PORTAL_RELATIONSHIP_SELECT,
+  rapportScore: true,
+  topicAffinityScore: true,
+} as const;
+
+function relationshipPerspective<T extends {
+  companionLow: { id: string; name: string; ownerUserId: string };
+  companionHigh: { id: string; name: string; ownerUserId: string };
+}>(relationship: T, userId: string) {
+  const ownCompanion = relationship.companionLow.ownerUserId === userId
+    ? relationship.companionLow
+    : relationship.companionHigh;
+  const remoteCompanion = ownCompanion.id === relationship.companionLow.id
+    ? relationship.companionHigh
+    : relationship.companionLow;
+  return { ...relationship, ownCompanion, remoteCompanion };
+}
 
 function exportCursorPage(cursor?: string) {
   return {

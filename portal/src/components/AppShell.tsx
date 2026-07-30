@@ -33,6 +33,7 @@ const userLinks = [
   { to: '/my-network/companion', label: 'My Companion', icon: Cat },
   { to: '/my-network/friends', label: 'Friends', icon: HeartHandshake },
   { to: '/my-network/visits', label: 'Visits', icon: Sparkles },
+  { to: '/my-network/relationships', label: 'Relationships', icon: HeartHandshake },
   { to: '/my-network/security', label: 'Devices & Security', icon: Laptop },
   { to: '/my-network/data', label: 'My Data', icon: Archive },
 ];

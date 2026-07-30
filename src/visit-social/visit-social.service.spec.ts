@@ -1,7 +1,17 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { VisitSocialService } from './visit-social.service';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 describe('VisitSocialService security boundaries', () => {
+  it('uses an insert-winner Shared Moment contract before updating relationships', () => {
+    const source = readFileSync(join(__dirname, 'visit-social.service.ts'), 'utf8');
+    expect(source).toContain('ON CONFLICT ("sessionId") DO NOTHING');
+    expect(source).toContain('if (inserted[0])');
+    expect(source.indexOf('if (inserted[0])')).toBeLessThan(source.indexOf('await this.updateRelationship'));
+    expect(source).toContain('Prisma.join(tags)');
+  });
+
   const session = {
     id: 'session-1',
     invitationId: 'invitation-1',

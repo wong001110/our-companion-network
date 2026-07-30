@@ -48,17 +48,21 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - name: Validate Social migration against main schema
+      - name: Validate PR migrations against main schema
         id: migrate
         continue-on-error: true
         run: |
           git show origin/main:prisma/schema.prisma > /tmp/main-schema.prisma
           npx prisma db push --schema /tmp/main-schema.prisma --skip-generate > migration.log 2>&1
-          psql "$PG_DATABASE_URL" -v ON_ERROR_STOP=1 -f prisma/migrations/20260725120000_social_visit_mvp/migration.sql >> migration.log 2>&1
+          mapfile -t migrations < <(git diff --name-only --diff-filter=A origin/main...HEAD -- 'prisma/migrations/*/migration.sql')
+          for migration in "${migrations[@]}"; do
+            echo "Applying ${migration}" >> migration.log
+            psql "$PG_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration" >> migration.log 2>&1
+          done
           npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code >> migration.log 2>&1
       - name: Upload migration diagnostics
         if: steps.migrate.outcome == 'failure'

@@ -24,6 +24,8 @@ interface VisitSessionParticipant {
   invitationId: string;
   visitorOwnerUserId: string;
   hostUserId: string;
+  networkCompanionId: string;
+  hostNetworkCompanionId: string | null;
   state: string;
   startedAt: Date | null;
   endedAt: Date | null;
@@ -241,20 +243,73 @@ export class VisitSocialService {
     const id = randomUUID();
     const title = `Shared: ${share.title}`.slice(0, 160);
     const summary = `The Companions shared “${share.title}” and exchanged ${turnCount} ${turnCount === 1 ? 'turn' : 'turns'}.`.slice(0, 600);
-    const rows = await tx.$queryRaw<MomentRow[]>`
+    const inserted = await tx.$queryRaw<MomentRow[]>`
       INSERT INTO "VisitSharedMoment" ("id", "sessionId", "title", "summary", "turnCount", "createdAt")
       VALUES (${id}, ${sessionId}, ${title}, ${summary}, ${turnCount}, NOW())
-      ON CONFLICT ("sessionId") DO UPDATE SET
-        "title" = EXCLUDED."title", "summary" = EXCLUDED."summary", "turnCount" = EXCLUDED."turnCount"
+      ON CONFLICT ("sessionId") DO NOTHING
       RETURNING "id", "sessionId", "title", "summary", "turnCount", "createdAt"
     `;
-    return rows[0];
+    if (inserted[0]) {
+      await this.updateRelationship(tx, sessionId, turnCount, share);
+      return inserted[0];
+    }
+    const existing = await tx.$queryRaw<MomentRow[]>`
+      SELECT "id", "sessionId", "title", "summary", "turnCount", "createdAt"
+      FROM "VisitSharedMoment" WHERE "sessionId" = ${sessionId}
+    `;
+    if (!existing[0]) throw new ConflictException({ code: 'VISIT_SHARED_MOMENT_RACE', message: 'The Shared Moment could not be reconciled' });
+    return existing[0];
+  }
+
+  private async updateRelationship(tx: Prisma.TransactionClient, sessionId: string, turnCount: number, share: ShareRow): Promise<void> {
+    const session = await tx.visitSession.findUnique({
+      where: { id: sessionId },
+      select: { networkCompanionId: true, hostNetworkCompanionId: true },
+    });
+    if (!session?.hostNetworkCompanionId || session.networkCompanionId === session.hostNetworkCompanionId) return;
+    const [companionLowId, companionHighId] = [session.networkCompanionId, session.hostNetworkCompanionId].sort();
+    const tags = Array.isArray(share.tags)
+      ? share.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 5)
+      : [];
+    const relationshipId = randomUUID();
+    const tagArray = tags.length
+      ? Prisma.sql`ARRAY[${Prisma.join(tags)}]::text[]`
+      : Prisma.sql`ARRAY[]::text[]`;
+    await tx.$executeRaw`
+      INSERT INTO "CompanionRelationship" (
+        "id", "companionLowId", "companionHighId", "stage", "visitCount", "interactionCount",
+        "totalTurnCount", "rapportScore", "topicAffinityScore", "sharedTopicTags",
+        "firstMetAt", "lastInteractionAt", "createdAt", "updatedAt"
+      ) VALUES (
+        ${relationshipId}, ${companionLowId}, ${companionHighId}, 'acquainted', 1, 1,
+        ${turnCount}, 0.08, 0.05, ${tagArray}, NOW(), NOW(), NOW(), NOW()
+      )
+      ON CONFLICT ("companionLowId", "companionHighId") DO UPDATE SET
+        "visitCount" = "CompanionRelationship"."visitCount" + 1,
+        "interactionCount" = "CompanionRelationship"."interactionCount" + 1,
+        "totalTurnCount" = "CompanionRelationship"."totalTurnCount" + EXCLUDED."totalTurnCount",
+        "rapportScore" = LEAST(1, "CompanionRelationship"."rapportScore" + 0.08),
+        "topicAffinityScore" = LEAST(1, "CompanionRelationship"."topicAffinityScore" + 0.05),
+        "sharedTopicTags" = ARRAY(
+          SELECT DISTINCT tag FROM unnest("CompanionRelationship"."sharedTopicTags" || EXCLUDED."sharedTopicTags") AS tag
+          LIMIT 20
+        ),
+        "stage" = CASE
+          WHEN "CompanionRelationship"."visitCount" + 1 >= 12 THEN 'trusted'
+          WHEN "CompanionRelationship"."visitCount" + 1 >= 8 THEN 'close'
+          WHEN "CompanionRelationship"."visitCount" + 1 >= 4 THEN 'friendly'
+          WHEN "CompanionRelationship"."visitCount" + 1 >= 2 THEN 'familiar'
+          ELSE 'acquainted'
+        END,
+        "lastInteractionAt" = NOW(),
+        "updatedAt" = NOW()
+    `;
   }
 
   private async requireParticipantSession(userId: string, sessionId: string, tx: Prisma.TransactionClient | PrismaService = this.prisma): Promise<VisitSessionParticipant> {
     const session = await tx.visitSession.findUnique({
       where: { id: sessionId },
-      select: { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, state: true, startedAt: true, endedAt: true },
+      select: { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, hostNetworkCompanionId: true, state: true, startedAt: true, endedAt: true },
     });
     if (!session) throw new NotFoundException({ code: 'VISIT_SESSION_NOT_FOUND', message: 'Visit session was not found' });
     if (session.visitorOwnerUserId !== userId && session.hostUserId !== userId) {
