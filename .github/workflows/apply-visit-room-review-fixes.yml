@@ -44,6 +44,7 @@ jobs:
       - run: npm --prefix portal ci
       - run: python scripts/apply-visit-room-review-fixes.py
       - run: python scripts/patch-visit-room-review-types.py
+      - run: python scripts/patch-visit-room-account-deletion-fixtures.py
       - run: npx prisma format
       - run: npm run prisma:generate
       - run: npm run lint
@@ -61,6 +62,7 @@ jobs:
         run: |
           rm scripts/apply-visit-room-review-fixes.py
           rm scripts/patch-visit-room-review-types.py
+          rm scripts/patch-visit-room-account-deletion-fixtures.py
           rm .github/workflows/apply-visit-room-review-fixes.yml
       - name: Commit reviewed product changes
         run: |
