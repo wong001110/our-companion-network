@@ -44,6 +44,7 @@ jobs:
       - run: npm --prefix portal ci
       - run: python scripts/apply-visit-reservations-room-membership.py
       - run: python scripts/patch-visit-room-lint.py
+      - run: python scripts/patch-visit-room-types.py
       - run: npx prisma format
       - run: npm run prisma:generate
       - run: npm run lint
@@ -63,6 +64,7 @@ jobs:
         run: |
           rm scripts/apply-visit-reservations-room-membership.py
           rm scripts/patch-visit-room-lint.py
+          rm scripts/patch-visit-room-types.py
           rm .github/workflows/apply-visit-reservations-room-membership.yml
       - name: Commit integrated product changes
         run: |
