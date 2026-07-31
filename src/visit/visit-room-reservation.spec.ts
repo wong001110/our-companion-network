@@ -34,7 +34,7 @@ describe('Visit reservation and room membership contract', () => {
     expect(roomSource).toContain("state: 'queued'");
     expect(roomSource).toContain('(aggregate._max.sequence ?? 0) + 1');
     expect(roomSource).toContain("role: 'guest', state: 'preparing'");
-    expect(schema).toContain('roomCapacity           Int');
+    expect(schema).toMatch(/roomCapacity\s+Int\s+@default\(3\)/);
     expect(schema).toMatch(/@@unique\(\[sessionId, requesterUserId, status\]\)/);
   });
 

@@ -501,6 +501,7 @@ describe('PortalService security projections', () => {
       visitInvitation: cursorModel([]),
       visitSession: cursorModel([]),
       companionRelationship: cursorModel([]),
+      visitRelationshipSettlement: cursorModel([]),
       shareableTopic: cursorModel([]),
       discovery: cursorModel([]),
       deviceSession: cursorModel([]),
@@ -591,6 +592,7 @@ describe('PortalService security projections', () => {
       visitInvitation: cursorModel([]),
       visitSession: cursorModel([]),
       companionRelationship: cursorModel([]),
+      visitRelationshipSettlement: cursorModel([]),
       shareableTopic: cursorModel([]),
       notification: cursorModel([{
         id: 'notification-1',
