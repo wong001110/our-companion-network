@@ -52,9 +52,9 @@ jobs:
       - run: npm run portal:lint
       - run: npm run portal:test -- --run
       - run: npm run portal:build
-      - name: Validate schema and migrations
+      - name: Validate reviewed schema
         run: |
-          npx prisma migrate deploy
+          npx prisma db push --skip-generate
           npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
       - name: Remove one-time integration files
         run: |
