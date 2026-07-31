@@ -107,6 +107,14 @@ jobs:
               raise SystemExit('relationship settlement unique constraint anchor not found')
           schema.write_text(source.replace(old, new, 1), encoding='utf-8')
 
+          social_spec = Path('src/visit-social/social-room-dialogue.spec.ts')
+          source = social_spec.read_text(encoding='utf-8')
+          old = "    expect(schema).toContain('@@unique([sessionId, companionLowId, companionHighId])');"
+          new = "    expect(schema).toContain('@@unique([sessionId, companionLowId, companionHighId], map: \"VisitRelSettlement_session_low_high_key\")');"
+          if old not in source:
+              raise SystemExit('Social Room unique constraint assertion anchor not found')
+          social_spec.write_text(source.replace(old, new, 1), encoding='utf-8')
+
           migration = Path('prisma/migrations/20260731070000_social_room_dialogue_settlement/migration.sql')
           source = migration.read_text(encoding='utf-8')
           old = 'VisitRelationshipSettlement_sessionId_companionLowId_companionHighId_key'
