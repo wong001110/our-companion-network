@@ -1,0 +1,89 @@
+name: Apply Social Room Dialogue Settlement
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.head_ref == 'agent/social-room-dialogue-settlement'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: our_companion_network_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/our_companion_network_test?schema=public
+      JWT_SECRET: room-dialogue-access-secret-32
+      JWT_REFRESH_SECRET: room-dialogue-refresh-secret-32
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/social-room-dialogue-settlement
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix portal ci
+      - name: Restore and adapt integration script
+        run: |
+          git show 525400f2a750020a49823b4b8e92826bc9242d74:scripts/apply-social-room-dialogue-settlement.py > /tmp/apply-social-room-dialogue-settlement.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/apply-social-room-dialogue-settlement.py')
+          source = path.read_text(encoding='utf-8')
+          old = '''  relationshipsAsLow  CompanionRelationship[] @relation("CompanionRelationshipLow")
+            relationshipsAsHigh CompanionRelationship[] @relation("CompanionRelationshipHigh")
+            shareableTopics'''
+          # Preserve the literal indentation used inside the old Python triple-quoted anchor.
+          old = old.replace('            relationshipsAsHigh', '  relationshipsAsHigh').replace('            shareableTopics', '  shareableTopics')
+          new = '''  relationshipsAsLow  CompanionRelationship[]   @relation("CompanionRelationshipLow")
+            relationshipsAsHigh CompanionRelationship[]   @relation("CompanionRelationshipHigh")
+            shareableTopics'''
+          new = new.replace('            relationshipsAsHigh', '  relationshipsAsHigh').replace('            shareableTopics', '  shareableTopics')
+          if old not in source:
+              raise SystemExit('old NetworkCompanion relation anchor not found in restored script')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
+          python /tmp/apply-social-room-dialogue-settlement.py
+      - run: npx prisma format
+      - run: npm run prisma:generate
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - run: npm run portal:typecheck
+      - run: npm run portal:lint
+      - run: npm run portal:test -- --run
+      - run: npm run portal:build
+      - name: Validate migration from main
+        run: |
+          git show origin/main:prisma/schema.prisma > /tmp/main-schema.prisma
+          npx prisma db push --schema /tmp/main-schema.prisma --skip-generate
+          psql "${DATABASE_URL%%\?*}" -v ON_ERROR_STOP=1 -f prisma/migrations/20260731070000_social_room_dialogue_settlement/migration.sql
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - name: Remove one-time workflow
+        run: rm .github/workflows/apply-social-room-dialogue-settlement.yml
+      - name: Commit product changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "feat: add Social Room topic progression and pair settlement"
+          git push origin HEAD:agent/social-room-dialogue-settlement
