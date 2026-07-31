@@ -1,0 +1,28 @@
+name: Export Room Contract Source
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.head_ref == 'agent/export-room-contract-source'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/export-room-contract-source
+          fetch-depth: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: room-contract-source
+          path: |
+            src/visit/**
+            src/visit-social/**
+            src/companion/**
+            prisma/schema.prisma
+          retention-days: 1
