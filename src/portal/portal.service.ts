@@ -13,6 +13,7 @@ import { Readable } from 'node:stream';
 import { PrismaService } from '../prisma/prisma.service';
 import { CompanionService } from '../companion/companion.service';
 import { UpdateProfileDto } from '../community/dto/update-profile.dto';
+import { UpdateCompanionSocialPolicyDto, UpsertShareableTopicDto } from '../companion/dto/shareable-topic.dto';
 import { ChangePasswordDto } from './dto/portal-auth.dto';
 import {
   FriendRequestQueryDto,
@@ -149,6 +150,9 @@ export class PortalService {
           publicTags: true,
           visibility: true,
           published: true,
+          randomVisitsEnabled: true,
+          randomVisitAudience: true,
+          allowJoinRequests: true,
           activeAssetPackId: true,
           publishedAt: true,
           createdAt: true,
@@ -183,6 +187,9 @@ export class PortalService {
         publicTags: true,
         visibility: true,
         published: true,
+        randomVisitsEnabled: true,
+        randomVisitAudience: true,
+        allowJoinRequests: true,
         activeAssetPackId: true,
         publishedAt: true,
         createdAt: true,
@@ -193,6 +200,26 @@ export class PortalService {
     if (!companion) throw new NotFoundException('Companion not found');
     const { activeForUser, ...profile } = companion;
     return { ...profile, isActive: Boolean(activeForUser) };
+  }
+
+  listShareableTopics(userId: string, companionId: string) {
+    return this.companions.listShareableTopics(userId, companionId);
+  }
+
+  createShareableTopic(userId: string, companionId: string, dto: UpsertShareableTopicDto) {
+    return this.companions.createShareableTopic(userId, companionId, dto);
+  }
+
+  updateShareableTopic(userId: string, companionId: string, topicId: string, dto: UpsertShareableTopicDto) {
+    return this.companions.updateShareableTopic(userId, companionId, topicId, dto);
+  }
+
+  revokeShareableTopic(userId: string, companionId: string, topicId: string) {
+    return this.companions.revokeShareableTopic(userId, companionId, topicId);
+  }
+
+  updateSocialPolicy(userId: string, companionId: string, dto: UpdateCompanionSocialPolicyDto) {
+    return this.companions.updateSocialPolicy(userId, companionId, dto);
   }
 
   async listAssetPacks(
@@ -750,6 +777,11 @@ export class PortalService {
         ...exportCursorPage(cursor),
         select: EXPORT_RELATIONSHIP_SELECT,
       }));
+    yield ',"shareableTopics":';
+    yield* this.streamExportArray((cursor) => this.prisma.shareableTopic.findMany({
+      where: { companion: { ownerUserId: userId } },
+      ...exportCursorPage(cursor),
+    }));
     yield ',"notifications":';
     yield* this.streamExportArray((cursor) =>
       this.prisma.notification.findMany({

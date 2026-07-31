@@ -6,7 +6,11 @@ import { SocialRateLimit } from '../common/decorators/social-rate-limit.decorato
 import { SocialRateLimitGuard } from '../common/guards/social-rate-limit.guard';
 import { VisitService } from './visit.service';
 
-class CreateInvitationDto { @IsUUID() hostUserId: string; }
+class CreateInvitationDto {
+  @IsUUID() hostUserId: string;
+  @IsOptional() @IsIn(['standard', 'random_host_topic', 'visitor_topic']) mode?: 'standard' | 'random_host_topic' | 'visitor_topic';
+  @IsOptional() @IsUUID() topicId?: string;
+}
 class ListVisitInvitationsDto {
   @IsOptional() @IsIn(['incoming', 'outgoing']) direction?: 'incoming' | 'outgoing';
   @IsOptional() @IsIn(['pending', 'accepted', 'declined', 'cancelled', 'expired']) status?: string;
@@ -18,7 +22,7 @@ class VisitFileIdsDto { @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @IsUUID('4
 export class VisitInvitationController {
   constructor(private readonly visits: VisitService) {}
   @Get() @SocialRateLimit('visit_read') list(@CurrentUser() user: UserPayload, @Query() query: ListVisitInvitationsDto) { return this.visits.listInvitations(user.id, query.direction, query.status); }
-  @Post() @SocialRateLimit('visit_create') create(@CurrentUser() user: UserPayload, @Body() dto: CreateInvitationDto) { return this.visits.createInvitation(user.id, dto.hostUserId); }
+  @Post() @SocialRateLimit('visit_create') create(@CurrentUser() user: UserPayload, @Body() dto: CreateInvitationDto) { return this.visits.createInvitation(user.id, dto.hostUserId, { mode: dto.mode, topicId: dto.topicId }); }
   @Post(':id/accept') @SocialRateLimit('visit_mutation') accept(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.acceptInvitation(user.id, id); }
   @Post(':id/decline') @SocialRateLimit('visit_mutation') decline(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.declineInvitation(user.id, id); }
   @Post(':id/cancel') @SocialRateLimit('visit_mutation') cancel(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.visits.cancelInvitation(user.id, id); }

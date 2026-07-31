@@ -181,6 +181,9 @@ model NetworkCompanion {
   publicTags          String[]                @default([])
   visibility          String                  @default("friends_only")
   published           Boolean                 @default(false)
+  randomVisitsEnabled Boolean                 @default(false)
+  randomVisitAudience String                  @default("friends")
+  allowJoinRequests   Boolean                 @default(true)
   activeAssetPackId   String?                 @unique
   activeAssetPack     CompanionAssetPack?     @relation("ActiveAssetPack", fields: [activeAssetPackId], references: [id])
   activeForUser       User?                   @relation("UserActiveNetworkCompanion")
@@ -193,8 +196,33 @@ model NetworkCompanion {
   hostedVisitSessions VisitSession[]          @relation("VisitSessionHostCompanion")
   relationshipsAsLow  CompanionRelationship[] @relation("CompanionRelationshipLow")
   relationshipsAsHigh CompanionRelationship[] @relation("CompanionRelationshipHigh")
+  shareableTopics     ShareableTopic[]
 
   @@index([ownerUserId])
+}
+
+model ShareableTopic {
+  id                     String            @id @default(uuid())
+  companionId            String
+  companion              NetworkCompanion  @relation(fields: [companionId], references: [id], onDelete: Cascade)
+  title                  String            @db.VarChar(120)
+  summary                String            @db.VarChar(600)
+  tags                   String[]          @default([])
+  sourceUrl              String?           @db.VarChar(2000)
+  audience               String            @default("friends")
+  shareScope             String            @default("summary_only")
+  allowRecipientSave     Boolean           @default(false)
+  eligibleForRandomVisit Boolean           @default(false)
+  expiresAt              DateTime?
+  revokedAt              DateTime?
+  lastUsedAt             DateTime?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  visitInvitationRefs    VisitInvitation[] @relation("VisitInvitationTopicRef")
+
+  @@index([companionId, eligibleForRandomVisit, revokedAt])
+  @@index([expiresAt])
+  @@index([lastUsedAt])
 }
 
 model CompanionAssetPack {
@@ -243,31 +271,45 @@ model CompanionAssetFile {
 }
 
 model VisitInvitation {
-  id                   String              @id @default(uuid())
-  visitorOwnerUserId   String
-  visitorOwner         User                @relation("VisitInvitationVisitorOwner", fields: [visitorOwnerUserId], references: [id], onDelete: Cascade)
-  hostUserId           String
-  host                 User                @relation("VisitInvitationHost", fields: [hostUserId], references: [id], onDelete: Cascade)
-  networkCompanionId   String
-  networkCompanion     NetworkCompanion    @relation(fields: [networkCompanionId], references: [id], onDelete: Restrict)
-  assetPackSnapshotId  String
-  assetPackRefId       String?
-  assetPackRef         CompanionAssetPack? @relation("VisitInvitationAssetPackRef", fields: [assetPackRefId], references: [id], onDelete: SetNull)
-  companionName        String
-  companionDescription String?
-  companionTags        String[]            @default([])
-  status               String
-  expiresAt            DateTime
-  respondedAt          DateTime?
-  cancelledAt          DateTime?
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
-  session              VisitSession?
+  id                      String              @id @default(uuid())
+  visitorOwnerUserId      String
+  visitorOwner            User                @relation("VisitInvitationVisitorOwner", fields: [visitorOwnerUserId], references: [id], onDelete: Cascade)
+  hostUserId              String
+  host                    User                @relation("VisitInvitationHost", fields: [hostUserId], references: [id], onDelete: Cascade)
+  networkCompanionId      String
+  networkCompanion        NetworkCompanion    @relation(fields: [networkCompanionId], references: [id], onDelete: Restrict)
+  assetPackSnapshotId     String
+  assetPackRefId          String?
+  assetPackRef            CompanionAssetPack? @relation("VisitInvitationAssetPackRef", fields: [assetPackRefId], references: [id], onDelete: SetNull)
+  companionName           String
+  companionDescription    String?
+  companionTags           String[]            @default([])
+  visitMode               String              @default("standard")
+  topicRefId              String?
+  topicRef                ShareableTopic?     @relation("VisitInvitationTopicRef", fields: [topicRefId], references: [id], onDelete: SetNull)
+  topicOwnerCompanionId   String?
+  topicCreatedByUserId    String?
+  topicTitle              String?             @db.VarChar(120)
+  topicSummary            String?             @db.VarChar(600)
+  topicTags               String[]            @default([])
+  topicSourceUrl          String?             @db.VarChar(2000)
+  topicShareScope         String?
+  topicAllowRecipientSave Boolean             @default(false)
+  topicSelectedAt         DateTime?
+  status                  String
+  expiresAt               DateTime
+  respondedAt             DateTime?
+  cancelledAt             DateTime?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  session                 VisitSession?
 
   @@index([visitorOwnerUserId, status])
   @@index([hostUserId, status])
   @@index([expiresAt, status])
   @@index([assetPackRefId, status])
+  @@index([topicRefId, status])
+  @@index([visitMode, status])
 }
 
 model VisitSession {
@@ -285,6 +327,7 @@ model VisitSession {
   assetPackSnapshotId    String
   assetPackRefId         String?
   assetPackRef           CompanionAssetPack? @relation("VisitSessionAssetPackRef", fields: [assetPackRefId], references: [id], onDelete: SetNull)
+  visitMode              String              @default("standard")
   state                  String
   visitorOwnerReadyAt    DateTime?
   hostReadyAt            DateTime?

@@ -16,8 +16,8 @@ const MAX_CONCURRENT_HOST_VISITORS = 2;
 // longer than Prisma's five-second interactive-transaction default while a
 // concurrent Visit operation releases one of those locks.
 const VISIT_ACCEPT_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 15_000 } as const;
-const INVITATION_SELECT = { id: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, companionName: true, companionDescription: true, companionTags: true, status: true, expiresAt: true, respondedAt: true, cancelledAt: true, createdAt: true, updatedAt: true } as const;
-const SESSION_SELECT = { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, hostNetworkCompanionId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, state: true, visitorOwnerReadyAt: true, hostReadyAt: true, readyAt: true, startedAt: true, endedAt: true, endReason: true, failureCode: true, createdAt: true, updatedAt: true } as const;
+const INVITATION_SELECT = { id: true, visitorOwnerUserId: true, hostUserId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, companionName: true, companionDescription: true, companionTags: true, visitMode: true, topicRefId: true, topicOwnerCompanionId: true, topicCreatedByUserId: true, topicTitle: true, topicSummary: true, topicTags: true, topicSourceUrl: true, topicShareScope: true, topicAllowRecipientSave: true, topicSelectedAt: true, status: true, expiresAt: true, respondedAt: true, cancelledAt: true, createdAt: true, updatedAt: true } as const;
+const SESSION_SELECT = { id: true, invitationId: true, visitorOwnerUserId: true, hostUserId: true, hostNetworkCompanionId: true, networkCompanionId: true, assetPackSnapshotId: true, assetPackRefId: true, visitMode: true, state: true, visitorOwnerReadyAt: true, hostReadyAt: true, readyAt: true, startedAt: true, endedAt: true, endReason: true, failureCode: true, createdAt: true, updatedAt: true } as const;
 
 @Injectable()
 export class VisitService implements OnModuleInit, OnModuleDestroy {
@@ -40,7 +40,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     return invitations.map(invitation => this.invitationSummary(invitation));
   }
 
-  async createInvitation(visitorOwnerUserId: string, hostUserId: string) {
+  async createInvitation(visitorOwnerUserId: string, hostUserId: string, input: { mode?: 'standard' | 'random_host_topic' | 'visitor_topic'; topicId?: string } = {}) {
     this.requireFeature();
     if (visitorOwnerUserId === hostUserId) throw new ConflictException({ code: 'VISIT_INVITATION_NOT_AVAILABLE', message: 'Visit invitation is not available' });
     const invitation = await this.prisma.$transaction(async tx => {
@@ -50,11 +50,19 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       const snapshot = await this.loadCurrentSnapshotInTransaction(tx, visitorOwnerUserId);
       if (!snapshot) this.notAvailable();
       if (!supportsVisualVisit(snapshot.pack.manifest)) this.visualAssetsUnavailable();
-      const existing = await tx.visitInvitation.findFirst({ where: { visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id, status: PENDING, expiresAt: { gt: new Date() } }, select: INVITATION_SELECT });
-      if (existing) throw new ConflictException({ code: 'VISIT_INVITATION_ALREADY_EXISTS', message: 'An equivalent Visit invitation is already pending' });
+      const visitMode = input.mode ?? 'standard';
+      const topic = await this.resolveInvitationTopic(tx, visitorOwnerUserId, hostUserId, snapshot.companion.id, visitMode, input.topicId);
+      // A visitor/host/Companion route can reserve only one pending invitation.
+      const existing = await tx.visitInvitation.findFirst({ where: {
+        visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id,
+        status: PENDING, expiresAt: { gt: new Date() },
+      }, select: { id: true } });
+      if (existing) throw new ConflictException({ code: 'VISIT_INVITATION_ALREADY_EXISTS', message: 'A Visit invitation is already pending for this route' });
       return tx.visitInvitation.create({ data: {
         visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id, assetPackSnapshotId: snapshot.pack.id, assetPackRefId: snapshot.pack.id,
         companionName: snapshot.companion.name, companionDescription: snapshot.companion.publicDescription, companionTags: snapshot.companion.publicTags,
+        visitMode,
+        ...(topic ?? {}),
         status: PENDING, expiresAt: new Date(Date.now() + this.limits.invitationTtlHours * 3_600_000),
       }, select: INVITATION_SELECT });
     });
@@ -94,10 +102,29 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
         where: { id: invitation.hostUserId },
         select: { activeNetworkCompanionId: true },
       });
+      const hostNetworkCompanionId = invitation.visitMode === 'random_host_topic'
+        ? invitation.topicOwnerCompanionId
+        : host?.activeNetworkCompanionId;
+      if (!hostNetworkCompanionId) this.notAvailable();
+      if (invitation.visitMode === 'random_host_topic'
+        && host?.activeNetworkCompanionId !== hostNetworkCompanionId) {
+        throw new ConflictException({ code: 'VISIT_HOST_COMPANION_CHANGED', message: 'The Host Companion changed after this invitation was created' });
+      }
       const session = await tx.visitSession.create({ data: {
         invitationId: invitation.id, visitorOwnerUserId: invitation.visitorOwnerUserId, hostUserId: invitation.hostUserId,
-        hostNetworkCompanionId: host?.activeNetworkCompanionId ?? null,
-        networkCompanionId: invitation.networkCompanionId, assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id, state: 'preparing',
+        hostNetworkCompanionId,
+        networkCompanionId: invitation.networkCompanionId, assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id,
+        visitMode: invitation.visitMode,
+        ...(invitation.topicTitle && invitation.topicSummary && invitation.topicCreatedByUserId ? {
+          socialShare: { create: {
+            title: invitation.topicTitle,
+            summary: invitation.topicSummary,
+            tags: invitation.topicTags,
+            sourceUrl: invitation.topicShareScope === 'summary_and_source' ? invitation.topicSourceUrl : null,
+            createdByUserId: invitation.topicCreatedByUserId,
+          } },
+        } : {}),
+        state: 'preparing',
       }, select: SESSION_SELECT });
       return { invitation: accepted, session, changed: true, expired: false };
     }, VISIT_ACCEPT_TRANSACTION_OPTIONS);
@@ -305,6 +332,81 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     return { companion, pack };
   }
 
+  private async resolveInvitationTopic(
+    tx: Prisma.TransactionClient,
+    visitorOwnerUserId: string,
+    hostUserId: string,
+    visitorCompanionId: string,
+    mode: 'standard' | 'random_host_topic' | 'visitor_topic',
+    topicId?: string,
+  ) {
+    if (mode === 'standard') {
+      if (topicId) throw new ConflictException({ code: 'VISIT_TOPIC_NOT_AVAILABLE', message: 'A standard Visit cannot attach a topic' });
+      return undefined;
+    }
+    const now = new Date();
+    if (mode === 'visitor_topic') {
+      if (!topicId) throw new ConflictException({ code: 'VISIT_TOPIC_REQUIRED', message: 'Choose a shareable topic for this Visit' });
+      const topic = await tx.shareableTopic.findFirst({
+        where: {
+          id: topicId,
+          companionId: visitorCompanionId,
+          audience: 'friends',
+          revokedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      });
+      if (!topic) throw new ConflictException({ code: 'VISIT_TOPIC_NOT_AVAILABLE', message: 'The selected topic is not available' });
+      return this.topicSnapshot(topic, visitorOwnerUserId, now);
+    }
+
+    const host = await tx.user.findUnique({
+      where: { id: hostUserId },
+      select: {
+        activeNetworkCompanion: {
+          select: {
+            id: true, published: true, visibility: true, activeAssetPackId: true,
+            randomVisitsEnabled: true, randomVisitAudience: true,
+          },
+        },
+      },
+    });
+    const hostCompanion = host?.activeNetworkCompanion;
+    if (!hostCompanion || !hostCompanion.published || hostCompanion.visibility !== 'friends_only'
+      || !hostCompanion.activeAssetPackId || !hostCompanion.randomVisitsEnabled
+      || hostCompanion.randomVisitAudience !== 'friends') {
+      throw new ConflictException({ code: 'RANDOM_VISIT_NOT_AVAILABLE', message: 'The host Companion is not accepting random visits' });
+    }
+    const topic = await tx.shareableTopic.findFirst({
+      where: {
+        companionId: hostCompanion.id,
+        audience: 'friends',
+        eligibleForRandomVisit: true,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      orderBy: [{ lastUsedAt: { sort: 'asc', nulls: 'first' } }, { updatedAt: 'desc' }],
+    });
+    if (!topic) throw new ConflictException({ code: 'RANDOM_VISIT_TOPIC_NOT_AVAILABLE', message: 'The host Companion has no active random-visit topic' });
+    await tx.shareableTopic.update({ where: { id: topic.id }, data: { lastUsedAt: now } });
+    return this.topicSnapshot(topic, hostUserId, now);
+  }
+
+  private topicSnapshot(topic: any, createdByUserId: string, selectedAt: Date) {
+    return {
+      topicRefId: topic.id,
+      topicOwnerCompanionId: topic.companionId,
+      topicCreatedByUserId: createdByUserId,
+      topicTitle: topic.title,
+      topicSummary: topic.summary,
+      topicTags: topic.tags,
+      topicSourceUrl: topic.shareScope === 'summary_and_source' ? topic.sourceUrl : null,
+      topicShareScope: topic.shareScope,
+      topicAllowRecipientSave: topic.allowRecipientSave,
+      topicSelectedAt: selectedAt,
+    };
+  }
+
   private async assertEligible(tx: any, first: string, second: string) {
     const [forward, reverse, blocked, activeParticipants] = await Promise.all([
       tx.friendship.findUnique({ where: { userId_friendId: { userId: first, friendId: second } } }),
@@ -350,8 +452,43 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   private async lockParticipants(tx: Prisma.TransactionClient, first: string, second: string) { await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" IN (${first}, ${second}) ORDER BY "id" FOR UPDATE`; }
   private async lockCompanion(tx: Prisma.TransactionClient, companionId: string) { await tx.$queryRaw`SELECT "id" FROM "NetworkCompanion" WHERE "id" = ${companionId} FOR UPDATE`; }
   private roleFor(session: { visitorOwnerUserId: string; hostUserId: string }, userId: string): 'owner' | 'host' | undefined { return session.visitorOwnerUserId === userId ? 'owner' : session.hostUserId === userId ? 'host' : undefined; }
-  private invitationSummary(value: any) { const { assetPackSnapshotId, assetPackRefId: _assetPackRefId, ...summary } = value; return { ...summary, assetPackId: assetPackSnapshotId, companionDescription: value.companionDescription ?? undefined, respondedAt: value.respondedAt?.toISOString(), cancelledAt: value.cancelledAt?.toISOString(), expiresAt: value.expiresAt.toISOString(), createdAt: value.createdAt.toISOString(), updatedAt: value.updatedAt.toISOString() }; }
-  private sessionSummary(value: any) { return { id: value.id, invitationId: value.invitationId, visitorOwnerUserId: value.visitorOwnerUserId, hostUserId: value.hostUserId, networkCompanionId: value.networkCompanionId, assetPackId: value.assetPackSnapshotId, state: value.state, visitorOwnerReady: Boolean(value.visitorOwnerReadyAt), hostReady: Boolean(value.hostReadyAt), readyAt: value.readyAt?.toISOString(), startedAt: value.startedAt?.toISOString(), endedAt: value.endedAt?.toISOString(), endReason: value.endReason ?? undefined, failureCode: value.failureCode ?? undefined, createdAt: value.createdAt.toISOString(), updatedAt: value.updatedAt.toISOString() }; }
+  private invitationSummary(value: any) {
+    const {
+      assetPackSnapshotId,
+      assetPackRefId: _assetPackRefId,
+      topicRefId: _topicRefId,
+      topicCreatedByUserId: _topicCreatedByUserId,
+      topicOwnerCompanionId,
+      topicTitle,
+      topicSummary,
+      topicTags,
+      topicSourceUrl,
+      topicShareScope,
+      topicAllowRecipientSave,
+      ...summary
+    } = value;
+    return {
+      ...summary,
+      assetPackId: assetPackSnapshotId,
+      companionDescription: value.companionDescription ?? undefined,
+      topic: topicTitle ? {
+        ownerCompanionId: topicOwnerCompanionId,
+        title: topicTitle,
+        summary: topicSummary,
+        tags: topicTags,
+        sourceUrl: topicShareScope === 'summary_and_source' ? topicSourceUrl ?? undefined : undefined,
+        shareScope: topicShareScope,
+        allowRecipientSave: topicAllowRecipientSave,
+      } : undefined,
+      topicSelectedAt: value.topicSelectedAt?.toISOString(),
+      respondedAt: value.respondedAt?.toISOString(),
+      cancelledAt: value.cancelledAt?.toISOString(),
+      expiresAt: value.expiresAt.toISOString(),
+      createdAt: value.createdAt.toISOString(),
+      updatedAt: value.updatedAt.toISOString(),
+    };
+  }
+  private sessionSummary(value: any) { return { id: value.id, invitationId: value.invitationId, visitorOwnerUserId: value.visitorOwnerUserId, hostUserId: value.hostUserId, networkCompanionId: value.networkCompanionId, assetPackId: value.assetPackSnapshotId, visitMode: value.visitMode, state: value.state, visitorOwnerReady: Boolean(value.visitorOwnerReadyAt), hostReady: Boolean(value.hostReadyAt), readyAt: value.readyAt?.toISOString(), startedAt: value.startedAt?.toISOString(), endedAt: value.endedAt?.toISOString(), endReason: value.endReason ?? undefined, failureCode: value.failureCode ?? undefined, createdAt: value.createdAt.toISOString(), updatedAt: value.updatedAt.toISOString() }; }
   private publishInvitation(invitation: any, event: string) { this.events.publishToUser(invitation.visitorOwnerUserId, event, { invitationId: invitation.id }); this.events.publishToUser(invitation.hostUserId, event, { invitationId: invitation.id }); }
   private publishSession(session: any, event: string) { const payload = { sessionId: session.id, state: session.state }; this.events.publishToUser(session.visitorOwnerUserId, event, payload); this.events.publishToUser(session.hostUserId, event, payload); }
   private timeoutReason(session: any, now: Date): string | undefined {

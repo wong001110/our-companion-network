@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Archive, Boxes, Cat, CheckCircle2, Clock3, FileCheck2, Tag } from 'lucide-react';
 import { api, type PageEnvelope } from '../lib/api';
 import { formatBytes, formatDate, sentenceCase, shortId } from '../lib/format';
+import { ShareableTopicsPanel } from '../features/companion/ShareableTopicsPanel';
 import {
   Button,
   EmptyState,
@@ -21,6 +22,9 @@ interface Companion {
   publicTags: string[];
   visibility: string;
   published: boolean;
+  randomVisitsEnabled: boolean;
+  randomVisitAudience: string;
+  allowJoinRequests: boolean;
   isActive: boolean;
   activeAssetPackId: string | null;
   publishedAt: string | null;
@@ -163,6 +167,7 @@ export function CompanionPage() {
               {publish.isError && <p className="inline-error" role="alert">{publish.error.message}</p>}
             </div>
           </PaperCard>
+          <ShareableTopicsPanel companion={companion} />
           <div className="section-title">
             <div>
               <p className="eyebrow">Wardrobe archive</p>

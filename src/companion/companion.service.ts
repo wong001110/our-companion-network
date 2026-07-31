@@ -5,10 +5,12 @@ import { SocialEventPublisher } from '../common/social-event-publisher.service';
 import { StorageService } from '../storage/storage.service';
 import { InitiateAssetPackDto } from './dto/initiate-asset-pack.dto';
 import { UpsertCompanionDto } from './dto/upsert-companion.dto';
+import { UpdateCompanionSocialPolicyDto, UpsertShareableTopicDto } from './dto/shareable-topic.dto';
 import { validateManifest } from './asset-manifest';
 import { VisitService } from '../visit/visit.service';
 
-const PUBLIC_SELECT = { id: true, ownerUserId: true, name: true, publicDescription: true, publicTags: true, visibility: true, published: true, activeAssetPackId: true, createdAt: true, updatedAt: true, publishedAt: true } as const;
+const PUBLIC_SELECT = { id: true, ownerUserId: true, name: true, publicDescription: true, publicTags: true, visibility: true, published: true, randomVisitsEnabled: true, randomVisitAudience: true, allowJoinRequests: true, activeAssetPackId: true, createdAt: true, updatedAt: true, publishedAt: true } as const;
+const TOPIC_SELECT = { id: true, companionId: true, title: true, summary: true, tags: true, sourceUrl: true, audience: true, shareScope: true, allowRecipientSave: true, eligibleForRandomVisit: true, expiresAt: true, revokedAt: true, lastUsedAt: true, createdAt: true, updatedAt: true } as const;
 const PACK_SELECT = { id: true, companionId: true, manifestHash: true, schemaVersion: true, status: true, totalFiles: true, totalBytes: true, failureCode: true, createdAt: true, updatedAt: true, completedAt: true, activatedAt: true, supersededAt: true } as const;
 const UPLOAD_URL_EXPIRY_SKEW_MS = 5_000;
 export interface CompleteAssetPackResult { assetPack: Record<string, unknown>; companion: Record<string, unknown>; }
@@ -80,6 +82,99 @@ export class CompanionService {
     const companion = user?.activeNetworkCompanion;
     if (user?.accountStatus !== 'ACTIVE' || !companion || !companion.published || companion.visibility !== 'friends_only' || !companion.activeAssetPackId) this.notAvailable();
     return this.publicProfile(companion);
+  }
+
+  async listShareableTopics(userId: string, companionId: string) {
+    await this.requireOwnedCompanion(userId, companionId);
+    const topics = await this.prisma.shareableTopic.findMany({
+      where: { companionId, revokedAt: null },
+      select: TOPIC_SELECT,
+      orderBy: [{ eligibleForRandomVisit: 'desc' }, { updatedAt: 'desc' }],
+    });
+    return topics.map(topic => this.shareableTopic(topic));
+  }
+
+  async createShareableTopic(userId: string, companionId: string, dto: UpsertShareableTopicDto) {
+    await this.requireOwnedCompanion(userId, companionId);
+    const topic = await this.prisma.shareableTopic.create({
+      data: { companionId, ...this.normalizeShareableTopic(dto) },
+      select: TOPIC_SELECT,
+    });
+    await this.publishInvalidation(userId, 'companion.topic.updated', { ownerUserId: userId, companionId, topicId: topic.id });
+    return this.shareableTopic(topic);
+  }
+
+  async updateShareableTopic(userId: string, companionId: string, topicId: string, dto: UpsertShareableTopicDto) {
+    await this.requireOwnedTopic(userId, companionId, topicId);
+    const topic = await this.prisma.shareableTopic.update({
+      where: { id: topicId },
+      data: { ...this.normalizeShareableTopic(dto), revokedAt: null },
+      select: TOPIC_SELECT,
+    });
+    await this.publishInvalidation(userId, 'companion.topic.updated', { ownerUserId: userId, companionId, topicId });
+    return this.shareableTopic(topic);
+  }
+
+  async revokeShareableTopic(userId: string, companionId: string, topicId: string) {
+    await this.requireOwnedTopic(userId, companionId, topicId);
+    const now = new Date();
+    const result = await this.prisma.$transaction(async tx => {
+      const topic = await tx.shareableTopic.update({
+        where: { id: topicId },
+        data: { revokedAt: now, eligibleForRandomVisit: false },
+        select: TOPIC_SELECT,
+      });
+      const remainingRandomTopics = await tx.shareableTopic.count({
+        where: {
+          companionId,
+          eligibleForRandomVisit: true,
+          revokedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      });
+      const disabled = remainingRandomTopics === 0
+        ? await tx.networkCompanion.updateMany({
+            where: { id: companionId, ownerUserId: userId, randomVisitsEnabled: true },
+            data: { randomVisitsEnabled: false },
+          })
+        : { count: 0 };
+      return { topic, randomVisitsDisabled: disabled.count === 1 };
+    });
+    await this.publishInvalidation(userId, 'companion.topic.revoked', { ownerUserId: userId, companionId, topicId });
+    if (result.randomVisitsDisabled) {
+      await this.publishInvalidation(userId, 'companion.profile.updated', { ownerUserId: userId, companionId });
+    }
+    return this.shareableTopic(result.topic);
+  }
+
+  async updateSocialPolicy(userId: string, companionId: string, dto: UpdateCompanionSocialPolicyDto) {
+    const companion = await this.requireOwnedCompanion(userId, companionId);
+    const randomVisitsEnabled = dto.randomVisitsEnabled ?? companion.randomVisitsEnabled;
+    if (randomVisitsEnabled) {
+      if (!companion.published || !companion.activeAssetPackId) {
+        throw new ConflictException({ code: 'RANDOM_VISIT_COMPANION_NOT_READY', message: 'Publish an active Companion before enabling random visits' });
+      }
+      const topicCount = await this.prisma.shareableTopic.count({
+        where: {
+          companionId,
+          eligibleForRandomVisit: true,
+          revokedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+      });
+      if (!topicCount) throw new ConflictException({ code: 'RANDOM_VISIT_TOPIC_REQUIRED', message: 'Enable at least one active random-visit topic first' });
+    }
+    const updated = await this.prisma.networkCompanion.update({
+      where: { id: companionId },
+      data: {
+        randomVisitsEnabled,
+        randomVisitAudience: dto.randomVisitAudience ?? companion.randomVisitAudience,
+        allowJoinRequests: dto.allowJoinRequests ?? companion.allowJoinRequests,
+      },
+      select: PUBLIC_SELECT,
+    });
+    await this.publishInvalidation(userId, 'companion.profile.updated', { ownerUserId: userId, companionId });
+    return this.publicProfile(updated);
   }
 
   async initiateAssetPack(userId: string, companionId: string, dto: InitiateAssetPackDto) {
@@ -584,6 +679,18 @@ export class CompanionService {
       || (Array.isArray(target) && target.includes('companionId'));
   }
 
+  private async requireOwnedTopic(userId: string, companionId: string, topicId: string) {
+    const topic = await this.prisma.shareableTopic.findUnique({
+      where: { id: topicId },
+      select: { id: true, companionId: true, companion: { select: { ownerUserId: true } } },
+    });
+    if (!topic) throw new NotFoundException({ code: 'SHAREABLE_TOPIC_NOT_FOUND', message: 'Shareable topic was not found' });
+    if (topic.companionId !== companionId || topic.companion.ownerUserId !== userId) {
+      throw new ForbiddenException({ code: 'SHAREABLE_TOPIC_NOT_OWNED', message: 'Shareable topic is not available' });
+    }
+    return topic;
+  }
+
   private async requireOwnedCompanion(userId: string, companionId: string) {
     const companion = await this.prisma.networkCompanion.findUnique({ where: { id: companionId } });
     if (!companion) throw new NotFoundException({ code: 'COMPANION_NOT_FOUND', message: 'Companion was not found' });
@@ -677,6 +784,43 @@ export class CompanionService {
     const companion = await this.prisma.networkCompanion.findUniqueOrThrow({ where: { id: pack.companionId }, select: PUBLIC_SELECT });
     return { assetPack: this.pack(pack), companion: this.publicProfile(companion) };
   }
+  private normalizeShareableTopic(dto: UpsertShareableTopicDto) {
+    const title = dto.title.trim().replace(/\s+/g, ' ');
+    const summary = dto.summary.trim().replace(/\s+/g, ' ');
+    const tags = [...new Set((dto.tags ?? []).map(tag => tag.trim().toLowerCase()).filter(Boolean))];
+    const sourceUrl = dto.shareScope === 'summary_and_source' ? dto.sourceUrl?.trim() : undefined;
+    const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : undefined;
+    if (!title || !summary || title.length > 120 || summary.length > 600 || tags.length > 8 || tags.some(tag => tag.length > 30)) {
+      throw new BadRequestException({ code: 'SHAREABLE_TOPIC_INVALID', message: 'Shareable topic is invalid' });
+    }
+    if (expiresAt && expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException({ code: 'SHAREABLE_TOPIC_EXPIRED', message: 'Shareable topic expiry must be in the future' });
+    }
+    return {
+      title,
+      summary,
+      tags,
+      sourceUrl,
+      audience: dto.audience ?? 'friends',
+      shareScope: dto.shareScope ?? 'summary_only',
+      allowRecipientSave: dto.allowRecipientSave ?? false,
+      eligibleForRandomVisit: dto.eligibleForRandomVisit ?? false,
+      expiresAt,
+    };
+  }
+
+  private shareableTopic(topic: any) {
+    return {
+      ...topic,
+      sourceUrl: topic.sourceUrl ?? undefined,
+      expiresAt: topic.expiresAt?.toISOString(),
+      revokedAt: topic.revokedAt?.toISOString(),
+      lastUsedAt: topic.lastUsedAt?.toISOString(),
+      createdAt: topic.createdAt.toISOString(),
+      updatedAt: topic.updatedAt.toISOString(),
+    };
+  }
+
   private normalizeProfile(dto: UpsertCompanionDto) {
     const name = dto.name?.trim();
     const publicDescription = dto.publicDescription?.trim() || undefined;

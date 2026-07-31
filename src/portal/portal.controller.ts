@@ -28,6 +28,7 @@ import {
   PortalVisitQueryDto,
 } from './dto/portal-query.dto';
 import { PortalService } from './portal.service';
+import { UpdateCompanionSocialPolicyDto, UpsertShareableTopicDto } from '../companion/dto/shareable-topic.dto';
 
 @Controller('portal')
 @UseGuards(PortalRateLimitGuard)
@@ -69,6 +70,31 @@ export class PortalController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.portal.getCompanion(user.id, id);
+  }
+
+  @Get('companions/:id/shareable-topics')
+  shareableTopics(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) {
+    return this.portal.listShareableTopics(user.id, id);
+  }
+
+  @Post('companions/:id/shareable-topics')
+  createShareableTopic(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpsertShareableTopicDto) {
+    return this.portal.createShareableTopic(user.id, id, dto);
+  }
+
+  @Patch('companions/:id/shareable-topics/:topicId')
+  updateShareableTopic(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Param('topicId', ParseUUIDPipe) topicId: string, @Body() dto: UpsertShareableTopicDto) {
+    return this.portal.updateShareableTopic(user.id, id, topicId, dto);
+  }
+
+  @Delete('companions/:id/shareable-topics/:topicId')
+  revokeShareableTopic(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Param('topicId', ParseUUIDPipe) topicId: string) {
+    return this.portal.revokeShareableTopic(user.id, id, topicId);
+  }
+
+  @Patch('companions/:id/social-policy')
+  updateSocialPolicy(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCompanionSocialPolicyDto) {
+    return this.portal.updateSocialPolicy(user.id, id, dto);
   }
 
   @Get('companions/:id/asset-packs')

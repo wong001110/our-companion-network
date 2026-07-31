@@ -7,6 +7,7 @@ import { CompanionService } from './companion.service';
 import { UpsertCompanionDto } from './dto/upsert-companion.dto';
 import { InitiateAssetPackDto } from './dto/initiate-asset-pack.dto';
 import { FileIdsDto } from './dto/file-ids.dto';
+import { UpdateCompanionSocialPolicyDto, UpsertShareableTopicDto } from './dto/shareable-topic.dto';
 
 @Controller('companions')
 @UseGuards(AuthGuard('jwt'), SocialRateLimitGuard)
@@ -18,6 +19,11 @@ export class CompanionController {
   @Post(':id/activate') @SocialRateLimit('companion_profile') activate(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.companions.activate(user.id, id); }
   @Post(':id/publish') @SocialRateLimit('companion_profile') publish(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.companions.publish(user.id, id); }
   @Post(':id/unpublish') @SocialRateLimit('companion_profile') unpublish(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.companions.unpublish(user.id, id); }
+  @Patch(':id/social-policy') @SocialRateLimit('companion_profile') policy(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCompanionSocialPolicyDto) { return this.companions.updateSocialPolicy(user.id, id, dto); }
+  @Get(':id/shareable-topics') @SocialRateLimit('read') topics(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.companions.listShareableTopics(user.id, id); }
+  @Post(':id/shareable-topics') @SocialRateLimit('companion_profile') createTopic(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpsertShareableTopicDto) { return this.companions.createShareableTopic(user.id, id, dto); }
+  @Patch(':id/shareable-topics/:topicId') @SocialRateLimit('companion_profile') updateTopic(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Param('topicId', ParseUUIDPipe) topicId: string, @Body() dto: UpsertShareableTopicDto) { return this.companions.updateShareableTopic(user.id, id, topicId, dto); }
+  @Delete(':id/shareable-topics/:topicId') @SocialRateLimit('companion_profile') revokeTopic(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Param('topicId', ParseUUIDPipe) topicId: string) { return this.companions.revokeShareableTopic(user.id, id, topicId); }
   @Get(':id/asset-packs') @SocialRateLimit('read') packs(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.companions.getAssetPacks(user.id, id); }
   @Post(':id/asset-packs') @SocialRateLimit('asset_initiate') initiate(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string, @Body() dto: InitiateAssetPackDto) { return this.companions.initiateAssetPack(user.id, id, dto); }
 }
