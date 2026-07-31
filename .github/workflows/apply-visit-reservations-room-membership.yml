@@ -49,7 +49,18 @@ jobs:
       - run: npm run prisma:generate
       - run: npm run lint
       - run: npm run build
-      - run: npm test -- --runInBand
+      - name: Run API tests
+        shell: bash
+        run: |
+          set +e
+          npm test -- --runInBand > /tmp/api-tests.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo '--- concise Jest failure summary ---'
+            grep -E -A24 -B5 'FAIL |Summary of all failing tests|TypeError:|Expected substring:|Expected:|Received:|Cannot read properties|● ' /tmp/api-tests.log | tail -n 500 || tail -n 500 /tmp/api-tests.log
+            exit "$status"
+          fi
+          tail -n 80 /tmp/api-tests.log
       - run: npm run portal:typecheck
       - run: npm run portal:lint
       - run: npm run portal:test -- --run
