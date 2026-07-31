@@ -44,6 +44,7 @@ jobs:
       - run: npm --prefix portal ci
       - name: Restore and adapt integration script
         run: |
+          git fetch origin 525400f2a750020a49823b4b8e92826bc9242d74
           git show 525400f2a750020a49823b4b8e92826bc9242d74:scripts/apply-social-room-dialogue-settlement.py > /tmp/apply-social-room-dialogue-settlement.py
           python - <<'PY'
           from pathlib import Path
