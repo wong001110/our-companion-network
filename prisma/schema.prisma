@@ -454,7 +454,7 @@ model VisitJoinRequest {
   createdAt               DateTime            @default(now())
   updatedAt               DateTime            @updatedAt
 
-  @@unique([sessionId, requesterUserId])
+  @@unique([sessionId, requesterUserId, status])
   @@index([sessionId, status])
   @@index([requesterUserId, status])
   @@index([expiresAt, status])

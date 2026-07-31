@@ -16,6 +16,8 @@ describe('Visit reservation and room membership contract', () => {
     expect(visitSource).toContain('expiredInvitation');
     expect(visitSource).toContain('assertCanSwitchToCompanion');
     expect(visitSource).toContain('assertCompanionMutationAllowed');
+    expect(visitSource).toContain('expiredJoinRequests');
+    expect(visitSource).toContain('displacedInvitations');
   });
 
   it('queues a joining Companion topic after the existing topic instead of replacing it', () => {

@@ -288,6 +288,7 @@ export class CompanionService {
   async completeAssetPack(userId: string, assetPackId: string): Promise<CompleteAssetPackResult> {
     const ownedPack = await this.requireOwnedPack(userId, assetPackId, true);
     if (ownedPack.status === 'active') return this.completeEnvelopeForActivePack(ownedPack);
+    await this.visits?.assertCompanionMutationAllowed(userId, ownedPack.companionId);
     this.requireStorage();
     if (!['uploading', 'verifying'].includes(ownedPack.status)) throw new ConflictException({ code: 'ASSET_PACK_NOT_UPLOADABLE', message: 'Asset Pack cannot be completed' });
     this.assertUploadSessionCurrent(ownedPack);

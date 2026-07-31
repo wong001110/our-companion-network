@@ -287,6 +287,7 @@ export class VisitRoomService {
       await tx.visitReservation.deleteMany({ where: { userId: current.requesterUserId, joinRequestId: current.id } });
       return updated;
     });
+    this.events.publishToUser(request.requesterUserId, 'visit.join_request.updated', { sessionId: request.sessionId, joinRequestId: request.id });
     await this.publishRoom(request.sessionId, 'visit.join_request.updated', { joinRequestId: request.id });
     return this.joinSummary(request);
   }

@@ -85,8 +85,11 @@ describe('Portal staged R2 deletion', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
       deviceSession: { updateMany: jest.fn() },
-      visitSession: { deleteMany: jest.fn(), updateMany: jest.fn() },
-      visitInvitation: { deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitSession: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitInvitation: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitReservation: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      visitSessionParticipant: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      visitJoinRequest: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     const prisma = {
       user: {
@@ -244,8 +247,11 @@ describe('Portal staged R2 deletion', () => {
         }),
       },
       deviceSession: { updateMany: jest.fn() },
-      visitSession: { deleteMany: jest.fn(), updateMany: jest.fn() },
-      visitInvitation: { deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitSession: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitInvitation: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitReservation: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      visitSessionParticipant: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      visitJoinRequest: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     const storage = {
       limits: { uploadUrlTtlSeconds: 900 },
@@ -300,8 +306,11 @@ describe('Portal staged R2 deletion', () => {
         findMany: jest.fn(),
       },
       deviceSession: { updateMany: jest.fn() },
-      visitSession: { deleteMany: jest.fn(), updateMany: jest.fn() },
-      visitInvitation: { deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitSession: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitInvitation: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), updateMany: jest.fn() },
+      visitReservation: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      visitSessionParticipant: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      visitJoinRequest: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     const prisma = {
       user: {

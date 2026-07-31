@@ -98,7 +98,7 @@ CREATE TABLE "VisitJoinRequest" (
   CONSTRAINT "VisitJoinRequest_status_check" CHECK ("status" IN ('pending', 'accepted', 'declined', 'cancelled', 'expired')),
   CONSTRAINT "VisitJoinRequest_topic_scope_check" CHECK ("topicShareScope" IS NULL OR "topicShareScope" IN ('summary_only', 'summary_and_source'))
 );
-CREATE UNIQUE INDEX "VisitJoinRequest_sessionId_requesterUserId_key" ON "VisitJoinRequest"("sessionId", "requesterUserId");
+CREATE UNIQUE INDEX "VisitJoinRequest_sessionId_requesterUserId_status_key" ON "VisitJoinRequest"("sessionId", "requesterUserId", "status");
 CREATE INDEX "VisitJoinRequest_sessionId_status_idx" ON "VisitJoinRequest"("sessionId", "status");
 CREATE INDEX "VisitJoinRequest_requesterUserId_status_idx" ON "VisitJoinRequest"("requesterUserId", "status");
 CREATE INDEX "VisitJoinRequest_expiresAt_status_idx" ON "VisitJoinRequest"("expiresAt", "status");

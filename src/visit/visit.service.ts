@@ -92,12 +92,12 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       const invitation = await tx.visitInvitation.findUnique({ where: { id: invitationId }, select: { ...INVITATION_SELECT, session: { select: SESSION_SELECT } } });
       if (!invitation) throw new NotFoundException({ code: 'VISIT_INVITATION_NOT_FOUND', message: 'Visit invitation was not found' });
       if (invitation.hostUserId !== hostUserId) throw new ForbiddenException({ code: 'VISIT_INVITATION_NOT_HOST', message: 'Visit invitation is not available' });
-      if (invitation.status === 'accepted' && invitation.session) return { invitation, session: invitation.session, changed: false };
+      if (invitation.status === 'accepted' && invitation.session) return { invitation, session: invitation.session, changed: false, displacedInvitations: [] };
       if (invitation.status !== PENDING) throw new ConflictException({ code: 'VISIT_INVITATION_NOT_PENDING', message: 'Visit invitation is no longer pending' });
       if (invitation.expiresAt <= new Date()) {
         const expiredInvitation = await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'expired', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
         await tx.visitReservation.deleteMany({ where: { userId: invitation.visitorOwnerUserId, invitationId: invitation.id } });
-        return { invitation: expiredInvitation, expired: true };
+        return { invitation: expiredInvitation, expired: true, displacedInvitations: [] };
       }
       await this.assertEligible(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
       const ownerReservation = await tx.visitReservation.findUnique({ where: { userId: invitation.visitorOwnerUserId } });
@@ -148,6 +148,18 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       await tx.visitReservation.create({
         data: { userId: invitation.hostUserId, networkCompanionId: hostNetworkCompanionId, kind: 'session_participant', sessionId: session.id },
       });
+      const displacedInvitations = await tx.visitInvitation.findMany({
+        where: { hostUserId: invitation.hostUserId, status: PENDING, id: { not: invitation.id } },
+        select: INVITATION_SELECT,
+      });
+      if (displacedInvitations.length) {
+        const displacedIds = displacedInvitations.map((item) => item.id);
+        await tx.visitInvitation.updateMany({
+          where: { id: { in: displacedIds }, status: PENDING },
+          data: { status: 'declined', respondedAt: new Date(), assetPackRefId: null },
+        });
+        await tx.visitReservation.deleteMany({ where: { invitationId: { in: displacedIds } } });
+      }
       if (invitation.topicTitle && invitation.topicSummary && invitation.topicCreatedByUserId && invitation.topicOwnerCompanionId) {
         const roomTopic = await tx.visitRoomTopic.create({ data: {
           sessionId: session.id, sequence: 1, state: 'active',
@@ -165,13 +177,14 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
           createdByUserId: invitation.topicCreatedByUserId,
         } });
       }
-      return { invitation: accepted, session, participants, changed: true, expired: false };
+      return { invitation: accepted, session, participants, displacedInvitations, changed: true, expired: false };
     }, VISIT_ACCEPT_TRANSACTION_OPTIONS);
     if (result.expired) {
       this.publishInvitation(result.invitation, 'visit.invitation.updated');
       throw new ConflictException({ code: 'VISIT_INVITATION_EXPIRED', message: 'Visit invitation expired' });
     }
     this.publishInvitation(result.invitation, 'visit.invitation.updated');
+    result.displacedInvitations.forEach((invitation) => this.publishInvitation(invitation, 'visit.invitation.updated'));
     if (result.changed) this.publishSession(result.session, 'visit.session.created');
     return { invitation: this.invitationSummary(result.invitation), session: this.sessionSummary(result.session) };
   }
@@ -333,6 +346,22 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
           const record = await this.prisma.visitInvitation.findUniqueOrThrow({ where: { id: invitation.id }, select: INVITATION_SELECT });
           this.publishInvitation(record, 'visit.invitation.updated');
         }
+      }
+      const expiredJoinRequests = await this.prisma.visitJoinRequest.findMany({
+        take: limit,
+        where: { status: PENDING, expiresAt: { lt: now } },
+        select: { id: true, sessionId: true, requesterUserId: true },
+      });
+      for (const request of expiredJoinRequests) {
+        const updated = await this.prisma.visitJoinRequest.updateMany({
+          where: { id: request.id, status: PENDING, expiresAt: { lt: now } },
+          data: { status: 'expired', respondedAt: now, assetPackRefId: null },
+        });
+        if (!updated.count) continue;
+        await this.prisma.visitReservation.deleteMany({ where: { userId: request.requesterUserId, joinRequestId: request.id } });
+        this.events.publishToUser(request.requesterUserId, 'visit.join_request.updated', { sessionId: request.sessionId, joinRequestId: request.id });
+        const participants = await this.prisma.visitSessionParticipant.findMany({ where: { sessionId: request.sessionId, state: { not: 'left' } }, select: { userId: true } });
+        for (const participant of participants) this.events.publishToUser(participant.userId, 'visit.join_request.updated', { sessionId: request.sessionId, joinRequestId: request.id });
       }
       const sessions = await this.prisma.visitSession.findMany({ take: limit, where: { state: { in: SESSION_LIVE } }, select: { id: true, state: true, createdAt: true, readyAt: true, startedAt: true, visitorOwnerSeenAt: true, hostSeenAt: true } });
       for (const session of sessions) {
