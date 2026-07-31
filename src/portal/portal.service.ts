@@ -568,9 +568,9 @@ export class PortalService {
     if (!relationship) throw new NotFoundException('Companion relationship not found');
     const visits = await this.prisma.visitSession.findMany({
       where: {
-        OR: [
-          { networkCompanionId: relationship.companionLowId, hostNetworkCompanionId: relationship.companionHighId },
-          { networkCompanionId: relationship.companionHighId, hostNetworkCompanionId: relationship.companionLowId },
+        AND: [
+          { participants: { some: { networkCompanionId: relationship.companionLowId } } },
+          { participants: { some: { networkCompanionId: relationship.companionHighId } } },
         ],
       },
       take: 20,
@@ -781,6 +781,17 @@ export class PortalService {
     yield* this.streamExportArray((cursor) => this.prisma.shareableTopic.findMany({
       where: { companion: { ownerUserId: userId } },
       ...exportCursorPage(cursor),
+    }));
+    yield ',"visitRelationshipSettlements":';
+    yield* this.streamExportArray((cursor) => this.prisma.visitRelationshipSettlement.findMany({
+      where: {
+        OR: [
+          { companionLow: { ownerUserId: userId } },
+          { companionHigh: { ownerUserId: userId } },
+        ],
+      },
+      ...exportCursorPage(cursor),
+      select: { id: true, sessionId: true, companionLowId: true, companionHighId: true, turnCount: true, topicTags: true, createdAt: true },
     }));
     yield ',"notifications":';
     yield* this.streamExportArray((cursor) =>
@@ -1575,9 +1586,17 @@ const PORTAL_SESSION_DETAIL_SELECT = {
   socialShare: {
     select: { id: true, title: true, summary: true, tags: true, sourceUrl: true, createdAt: true },
   },
+  participants: {
+    orderBy: [{ joinedAt: 'asc' }, { id: 'asc' }] as Prisma.VisitSessionParticipantOrderByWithRelationInput[],
+    select: { id: true, userId: true, networkCompanionId: true, role: true, state: true, readyAt: true, joinedAt: true, leftAt: true, networkCompanion: { select: { name: true } } },
+  },
+  roomTopics: {
+    orderBy: { sequence: 'asc' as const },
+    select: { id: true, sequence: true, state: true, ownerCompanionId: true, title: true, summary: true, tags: true, sourceUrl: true, shareScope: true, allowRecipientSave: true, minimumTurns: true, maximumTurns: true, startedAt: true, completedAt: true },
+  },
   socialTurns: {
     orderBy: { sequence: 'asc' as const },
-    select: { id: true, sequence: true, senderUserId: true, intent: true, message: true, emotion: true, topic: true, createdAt: true },
+    select: { id: true, sequence: true, senderUserId: true, roomTopicId: true, intent: true, message: true, emotion: true, topic: true, createdAt: true },
   },
   sharedMoment: {
     select: { id: true, title: true, summary: true, turnCount: true, createdAt: true },
