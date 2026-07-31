@@ -18,6 +18,10 @@ export class VisitRoomController {
   @SocialRateLimit('visit_read')
   reservation(@CurrentUser() user: UserPayload) { return this.rooms.getReservation(user.id); }
 
+  @Get('visit-rooms/joinable')
+  @SocialRateLimit('visit_read')
+  joinableRooms(@CurrentUser() user: UserPayload) { return this.rooms.listJoinableRooms(user.id); }
+
   @Get('visit-sessions/:id/room')
   @SocialRateLimit('visit_read')
   room(@CurrentUser() user: UserPayload, @Param('id', ParseUUIDPipe) id: string) { return this.rooms.getRoom(user.id, id); }
