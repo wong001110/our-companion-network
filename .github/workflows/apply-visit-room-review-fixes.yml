@@ -1,0 +1,69 @@
+name: Apply Visit Room Review Fixes
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.head_ref == 'agent/visit-reservations-social-room'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: our_companion_network_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/our_companion_network_test?schema=public
+      JWT_SECRET: room-review-access-secret-32
+      JWT_REFRESH_SECRET: room-review-refresh-secret-32
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/visit-reservations-social-room
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix portal ci
+      - run: python scripts/apply-visit-room-review-fixes.py
+      - run: npx prisma format
+      - run: npm run prisma:generate
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - run: npm run portal:typecheck
+      - run: npm run portal:lint
+      - run: npm run portal:test -- --run
+      - run: npm run portal:build
+      - name: Validate reviewed schema
+        run: |
+          npx prisma db push --skip-generate
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - name: Remove one-time files
+        run: |
+          rm scripts/apply-visit-room-review-fixes.py
+          rm .github/workflows/apply-visit-room-review-fixes.yml
+      - name: Commit reviewed product changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: close Visit reservation lifecycle gaps"
+          git push origin HEAD:agent/visit-reservations-social-room
