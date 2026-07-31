@@ -53,7 +53,6 @@ jobs:
           old = '''  relationshipsAsLow  CompanionRelationship[] @relation("CompanionRelationshipLow")
             relationshipsAsHigh CompanionRelationship[] @relation("CompanionRelationshipHigh")
             shareableTopics'''
-          # Preserve the literal indentation used inside the old Python triple-quoted anchor.
           old = old.replace('            relationshipsAsHigh', '  relationshipsAsHigh').replace('            shareableTopics', '  shareableTopics')
           new = '''  relationshipsAsLow  CompanionRelationship[]   @relation("CompanionRelationshipLow")
             relationshipsAsHigh CompanionRelationship[]   @relation("CompanionRelationshipHigh")
@@ -64,6 +63,25 @@ jobs:
           path.write_text(source.replace(old, new, 1), encoding='utf-8')
           PY
           python /tmp/apply-social-room-dialogue-settlement.py
+          python - <<'PY'
+          from pathlib import Path
+
+          portal = Path('src/portal/portal.service.ts')
+          source = portal.read_text(encoding='utf-8')
+          old = "orderBy: [{ joinedAt: 'asc' as const }, { id: 'asc' as const }],"
+          new = "orderBy: [{ joinedAt: 'asc' }, { id: 'asc' }] as Prisma.VisitSessionParticipantOrderByWithRelationInput[],"
+          if old not in source:
+              raise SystemExit('generated Portal participant orderBy anchor not found')
+          portal.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          social = Path('src/visit-social/visit-social.service.ts')
+          source = social.read_text(encoding='utf-8')
+          old = 'turns: turns.map((turn) => this.turnSummary(turn)),'
+          new = 'turns: turns.map((turn: TurnRow) => this.turnSummary(turn)),'
+          if old not in source:
+              raise SystemExit('generated Visit turn map anchor not found')
+          social.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
       - run: npx prisma format
       - run: npm run prisma:generate
       - run: npm run lint
