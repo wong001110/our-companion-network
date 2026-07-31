@@ -51,6 +51,64 @@ export class VisitRoomService {
     };
   }
 
+  async listJoinableRooms(userId: string) {
+    const reservation = await this.prisma.visitReservation.findUnique({ where: { userId }, select: { userId: true } });
+    if (reservation) return [];
+    const sessions = await this.prisma.visitSession.findMany({
+      where: {
+        state: { in: ['ready', 'active'] },
+        hostNetworkCompanion: { allowJoinRequests: true },
+        participants: { none: { userId, state: { not: 'left' } } },
+      },
+      select: {
+        id: true, state: true, hostUserId: true, roomCapacity: true, currentTopicSequence: true, updatedAt: true,
+        host: { select: { username: true } },
+        hostNetworkCompanion: { select: { id: true, name: true } },
+        participants: {
+          where: { state: { not: 'left' } },
+          select: { userId: true, networkCompanionId: true, role: true, networkCompanion: { select: { name: true } } },
+          orderBy: [{ joinedAt: 'asc' }, { id: 'asc' }],
+        },
+        roomTopics: { where: { state: 'active' }, select: TOPIC_SELECT, orderBy: { sequence: 'asc' }, take: 1 },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    });
+    const peerIds = [...new Set(sessions.flatMap((session) => session.participants.map((participant) => participant.userId)).filter((peerId) => peerId !== userId))];
+    if (!peerIds.length) return [];
+    const [friendships, blocks] = await Promise.all([
+      this.prisma.friendship.findMany({ where: { userId, friendId: { in: peerIds } }, select: { friendId: true } }),
+      this.prisma.blockedUser.findMany({
+        where: { OR: [{ blockerId: userId, blockedId: { in: peerIds } }, { blockerId: { in: peerIds }, blockedId: userId }] },
+        select: { blockerId: true, blockedId: true },
+      }),
+    ]);
+    const friendIds = new Set(friendships.map((friendship) => friendship.friendId));
+    const blockedIds = new Set(blocks.map((block) => block.blockerId === userId ? block.blockedId : block.blockerId));
+    return sessions
+      .filter((session) => session.participants.length < session.roomCapacity)
+      .filter((session) => session.participants.every((participant) => participant.userId === userId || (friendIds.has(participant.userId) && !blockedIds.has(participant.userId))))
+      .map((session) => ({
+        sessionId: session.id,
+        state: session.state,
+        hostUserId: session.hostUserId,
+        hostUsername: session.host.username,
+        hostNetworkCompanionId: session.hostNetworkCompanion?.id,
+        hostCompanionName: session.hostNetworkCompanion?.name,
+        roomCapacity: session.roomCapacity,
+        participantCount: session.participants.length,
+        currentTopicSequence: session.currentTopicSequence,
+        participants: session.participants.map((participant) => ({
+          userId: participant.userId,
+          networkCompanionId: participant.networkCompanionId,
+          companionName: participant.networkCompanion.name,
+          role: participant.role,
+        })),
+        activeTopic: session.roomTopics[0] ? this.topicSummary(session.roomTopics[0]) : undefined,
+        updatedAt: session.updatedAt.toISOString(),
+      }));
+  }
+
   async getRoom(userId: string, sessionId: string) {
     await this.requireParticipant(userId, sessionId, ['preparing', 'ready', 'active', 'left']);
     const [session, participants, topics, joinRequests] = await Promise.all([

@@ -38,6 +38,16 @@ describe('Visit reservation and room membership contract', () => {
     expect(schema).toMatch(/@@unique\(\[sessionId, requesterUserId, status\]\)/);
   });
 
+  it('lists only joinable friend rooms through a sanitized discovery endpoint', () => {
+    const controllerSource = readFileSync(join(__dirname, 'visit-room.controller.ts'), 'utf8');
+    expect(controllerSource).toContain("@Get('visit-rooms/joinable')");
+    expect(roomSource).toContain('listJoinableRooms');
+    expect(roomSource).toContain("hostNetworkCompanion: { allowJoinRequests: true }");
+    expect(roomSource).toContain('friendIds.has(participant.userId)');
+    expect(roomSource).toContain('session.participants.length < session.roomCapacity');
+    expect(roomSource).toContain('activeTopic: session.roomTopics[0]');
+  });
+
   it('keeps room assets scoped to active participants', () => {
     expect(roomSource).toContain('authorizeParticipantAsset');
     expect(roomSource).toContain("state: { not: 'left' }");
