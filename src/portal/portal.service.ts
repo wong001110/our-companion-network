@@ -990,6 +990,16 @@ export class PortalService {
       }
 
       const deletionRequestedAt = account.deletionRequestedAt ?? new Date();
+      const [affectedInvitations, affectedSessions] = await Promise.all([
+        tx.visitInvitation.findMany({
+          where: { status: 'pending', OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }] },
+          select: { id: true },
+        }),
+        tx.visitSession.findMany({
+          where: { state: { in: ['preparing', 'ready', 'active', 'ending'] }, OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }, { participants: { some: { userId, state: { not: 'left' } } } }] },
+          select: { id: true },
+        }),
+      ]);
       await tx.user.update({
         where: { id: userId },
         data: {
@@ -1036,6 +1046,23 @@ export class PortalService {
           endReason: 'account_deletion_requested',
           assetPackRefId: null,
         },
+      });
+      await tx.visitReservation.deleteMany({
+        where: {
+          OR: [
+            { userId },
+            { invitationId: { in: affectedInvitations.map((item) => item.id) } },
+            { sessionId: { in: affectedSessions.map((item) => item.id) } },
+          ],
+        },
+      });
+      await tx.visitSessionParticipant.updateMany({
+        where: { sessionId: { in: affectedSessions.map((item) => item.id) }, state: { not: 'left' } },
+        data: { state: 'left', leftAt: deletionRequestedAt, assetPackRefId: null },
+      });
+      await tx.visitJoinRequest.updateMany({
+        where: { requesterUserId: userId, status: 'pending' },
+        data: { status: 'cancelled', cancelledAt: deletionRequestedAt, assetPackRefId: null },
       });
       await tx.networkCompanion.updateMany({
         where: { ownerUserId: userId },

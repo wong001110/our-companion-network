@@ -46,6 +46,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     const invitation = await this.prisma.$transaction(async tx => {
       await this.lockParticipants(tx, visitorOwnerUserId, hostUserId);
       await this.assertEligible(tx, visitorOwnerUserId, hostUserId);
+      await this.assertNoReservation(tx, visitorOwnerUserId);
       await this.assertVisitorOwnerAvailable(tx, visitorOwnerUserId);
       const snapshot = await this.loadCurrentSnapshotInTransaction(tx, visitorOwnerUserId);
       if (!snapshot) this.notAvailable();
@@ -58,13 +59,21 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
         status: PENDING, expiresAt: { gt: new Date() },
       }, select: { id: true } });
       if (existing) throw new ConflictException({ code: 'VISIT_INVITATION_ALREADY_EXISTS', message: 'A Visit invitation is already pending for this route' });
-      return tx.visitInvitation.create({ data: {
+      const expiresAt = new Date(Date.now() + this.limits.invitationTtlHours * 3_600_000);
+      const created = await tx.visitInvitation.create({ data: {
         visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id, assetPackSnapshotId: snapshot.pack.id, assetPackRefId: snapshot.pack.id,
         companionName: snapshot.companion.name, companionDescription: snapshot.companion.publicDescription, companionTags: snapshot.companion.publicTags,
         visitMode,
         ...(topic ?? {}),
-        status: PENDING, expiresAt: new Date(Date.now() + this.limits.invitationTtlHours * 3_600_000),
+        status: PENDING, expiresAt,
       }, select: INVITATION_SELECT });
+      await tx.visitReservation.create({
+        data: {
+          userId: visitorOwnerUserId, networkCompanionId: snapshot.companion.id,
+          kind: 'outgoing_invitation', invitationId: created.id, expiresAt,
+        },
+      });
+      return created;
     });
     this.publishInvitation(invitation, 'visit.invitation.created');
     return this.invitationSummary(invitation);
@@ -83,12 +92,19 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       const invitation = await tx.visitInvitation.findUnique({ where: { id: invitationId }, select: { ...INVITATION_SELECT, session: { select: SESSION_SELECT } } });
       if (!invitation) throw new NotFoundException({ code: 'VISIT_INVITATION_NOT_FOUND', message: 'Visit invitation was not found' });
       if (invitation.hostUserId !== hostUserId) throw new ForbiddenException({ code: 'VISIT_INVITATION_NOT_HOST', message: 'Visit invitation is not available' });
-      if (invitation.status === 'accepted' && invitation.session) return { invitation, session: invitation.session, changed: false };
+      if (invitation.status === 'accepted' && invitation.session) return { invitation, session: invitation.session, changed: false, displacedInvitations: [] };
       if (invitation.status !== PENDING) throw new ConflictException({ code: 'VISIT_INVITATION_NOT_PENDING', message: 'Visit invitation is no longer pending' });
       if (invitation.expiresAt <= new Date()) {
-        return { invitation: await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'expired', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT }), expired: true };
+        const expiredInvitation = await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'expired', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
+        await tx.visitReservation.deleteMany({ where: { userId: invitation.visitorOwnerUserId, invitationId: invitation.id } });
+        return { invitation: expiredInvitation, expired: true, displacedInvitations: [] };
       }
       await this.assertEligible(tx, invitation.visitorOwnerUserId, invitation.hostUserId);
+      const ownerReservation = await tx.visitReservation.findUnique({ where: { userId: invitation.visitorOwnerUserId } });
+      if (!ownerReservation || ownerReservation.kind !== 'outgoing_invitation' || ownerReservation.invitationId !== invitation.id) {
+        throw new ConflictException({ code: 'VISIT_RESERVATION_CHANGED', message: 'The Visitor reservation changed' });
+      }
+      await this.assertNoReservation(tx, invitation.hostUserId);
       await this.assertVisitorOwnerAvailable(tx, invitation.visitorOwnerUserId);
       await this.assertHostCapacity(tx, invitation.hostUserId);
       await this.lockCompanion(tx, invitation.networkCompanionId);
@@ -98,41 +114,77 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       if (!pack || pack.id !== invitation.assetPackSnapshotId || pack.companionId !== invitation.networkCompanionId || !['active', 'superseded'].includes(pack.status)) this.notAvailable();
       if (!supportsVisualVisit(pack.manifest)) this.visualAssetsUnavailable();
       const accepted = await tx.visitInvitation.update({ where: { id: invitation.id }, data: { status: 'accepted', respondedAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
-      const host = await tx.user.findUnique({
-        where: { id: invitation.hostUserId },
-        select: { activeNetworkCompanionId: true },
-      });
+      const hostSnapshot = await this.loadCurrentSnapshotInTransaction(tx, invitation.hostUserId);
       const hostNetworkCompanionId = invitation.visitMode === 'random_host_topic'
         ? invitation.topicOwnerCompanionId
-        : host?.activeNetworkCompanionId;
-      if (!hostNetworkCompanionId) this.notAvailable();
+        : hostSnapshot?.companion.id;
+      if (!hostSnapshot || !hostNetworkCompanionId) this.notAvailable();
       if (invitation.visitMode === 'random_host_topic'
-        && host?.activeNetworkCompanionId !== hostNetworkCompanionId) {
+        && hostSnapshot.companion.id !== hostNetworkCompanionId) {
         throw new ConflictException({ code: 'VISIT_HOST_COMPANION_CHANGED', message: 'The Host Companion changed after this invitation was created' });
       }
       const session = await tx.visitSession.create({ data: {
         invitationId: invitation.id, visitorOwnerUserId: invitation.visitorOwnerUserId, hostUserId: invitation.hostUserId,
         hostNetworkCompanionId,
         networkCompanionId: invitation.networkCompanionId, assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id,
-        visitMode: invitation.visitMode,
-        ...(invitation.topicTitle && invitation.topicSummary && invitation.topicCreatedByUserId ? {
-          socialShare: { create: {
-            title: invitation.topicTitle,
-            summary: invitation.topicSummary,
-            tags: invitation.topicTags,
-            sourceUrl: invitation.topicShareScope === 'summary_and_source' ? invitation.topicSourceUrl : null,
-            createdByUserId: invitation.topicCreatedByUserId,
-          } },
-        } : {}),
-        state: 'preparing',
+        visitMode: invitation.visitMode, state: 'preparing',
       }, select: SESSION_SELECT });
-      return { invitation: accepted, session, changed: true, expired: false };
+      const participants = await Promise.all([
+        tx.visitSessionParticipant.create({ data: {
+          sessionId: session.id, userId: invitation.hostUserId, networkCompanionId: hostNetworkCompanionId,
+          assetPackSnapshotId: hostSnapshot.pack.id, assetPackRefId: hostSnapshot.pack.id,
+          role: 'host', state: 'preparing', seenAt: new Date(),
+        } }),
+        tx.visitSessionParticipant.create({ data: {
+          sessionId: session.id, userId: invitation.visitorOwnerUserId, networkCompanionId: invitation.networkCompanionId,
+          assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id,
+          role: 'visitor', state: 'preparing', seenAt: new Date(),
+        } }),
+      ]);
+      await tx.visitReservation.update({
+        where: { userId: invitation.visitorOwnerUserId },
+        data: { kind: 'session_participant', invitationId: null, sessionId: session.id, expiresAt: null },
+      });
+      await tx.visitReservation.create({
+        data: { userId: invitation.hostUserId, networkCompanionId: hostNetworkCompanionId, kind: 'session_participant', sessionId: session.id },
+      });
+      const displacedInvitations = await tx.visitInvitation.findMany({
+        where: { hostUserId: invitation.hostUserId, status: PENDING, id: { not: invitation.id } },
+        select: INVITATION_SELECT,
+      });
+      if (displacedInvitations.length) {
+        const displacedIds = displacedInvitations.map((item) => item.id);
+        await tx.visitInvitation.updateMany({
+          where: { id: { in: displacedIds }, status: PENDING },
+          data: { status: 'declined', respondedAt: new Date(), assetPackRefId: null },
+        });
+        await tx.visitReservation.deleteMany({ where: { invitationId: { in: displacedIds } } });
+      }
+      if (invitation.topicTitle && invitation.topicSummary && invitation.topicCreatedByUserId && invitation.topicOwnerCompanionId) {
+        const roomTopic = await tx.visitRoomTopic.create({ data: {
+          sessionId: session.id, sequence: 1, state: 'active',
+          ownerCompanionId: invitation.topicOwnerCompanionId, createdByUserId: invitation.topicCreatedByUserId,
+          title: invitation.topicTitle, summary: invitation.topicSummary, tags: invitation.topicTags,
+          sourceUrl: invitation.topicShareScope === 'summary_and_source' ? invitation.topicSourceUrl : null,
+          shareScope: invitation.topicShareScope ?? 'summary_only',
+          allowRecipientSave: invitation.topicAllowRecipientSave,
+          startedAt: new Date(),
+        } });
+        await tx.visitShareEnvelope.create({ data: {
+          sessionId: session.id, roomTopicId: roomTopic.id,
+          title: invitation.topicTitle, summary: invitation.topicSummary, tags: invitation.topicTags,
+          sourceUrl: invitation.topicShareScope === 'summary_and_source' ? invitation.topicSourceUrl : null,
+          createdByUserId: invitation.topicCreatedByUserId,
+        } });
+      }
+      return { invitation: accepted, session, participants, displacedInvitations, changed: true, expired: false };
     }, VISIT_ACCEPT_TRANSACTION_OPTIONS);
     if (result.expired) {
       this.publishInvitation(result.invitation, 'visit.invitation.updated');
       throw new ConflictException({ code: 'VISIT_INVITATION_EXPIRED', message: 'Visit invitation expired' });
     }
     this.publishInvitation(result.invitation, 'visit.invitation.updated');
+    result.displacedInvitations.forEach((invitation) => this.publishInvitation(invitation, 'visit.invitation.updated'));
     if (result.changed) this.publishSession(result.session, 'visit.session.created');
     return { invitation: this.invitationSummary(result.invitation), session: this.sessionSummary(result.session) };
   }
@@ -141,7 +193,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   async cancelInvitation(visitorOwnerUserId: string, invitationId: string) { return this.respondToInvitation(visitorOwnerUserId, invitationId, 'owner', 'cancelled'); }
 
   async listSessions(userId: string) {
-    const sessions = await this.prisma.visitSession.findMany({ where: { OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }] }, select: SESSION_SELECT, orderBy: { updatedAt: 'desc' } });
+    const sessions = await this.prisma.visitSession.findMany({ where: { OR: [{ visitorOwnerUserId: userId }, { hostUserId: userId }, { participants: { some: { userId, state: { not: 'left' } } } }] }, select: SESSION_SELECT, orderBy: { updatedAt: 'desc' } });
     return sessions.map(session => this.sessionSummary(session));
   }
 
@@ -160,6 +212,10 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       const now = new Date();
       const data: any = role === 'owner' ? { visitorOwnerReadyAt: current.visitorOwnerReadyAt ?? now, visitorOwnerSeenAt: now } : { hostReadyAt: current.hostReadyAt ?? now, hostSeenAt: now };
       const updated = await tx.visitSession.update({ where: { id: current.id }, data, select: { ...SESSION_SELECT, visitorOwnerSeenAt: true, hostSeenAt: true } });
+      await tx.visitSessionParticipant.updateMany({
+        where: { sessionId: current.id, userId },
+        data: { state: 'ready', readyAt: now, seenAt: now },
+      });
       if (updated.visitorOwnerReadyAt && updated.hostReadyAt) return tx.visitSession.update({ where: { id: current.id }, data: { state: 'ready', readyAt: updated.readyAt ?? now }, select: SESSION_SELECT });
       return updated;
     });
@@ -176,26 +232,37 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       await this.assertEligible(tx, current.visitorOwnerUserId, current.hostUserId);
       if (current.state === 'active') return current;
       if (current.state !== 'ready') throw new ConflictException({ code: 'VISIT_SESSION_NOT_READY', message: 'Visit session is not ready' });
-      return tx.visitSession.update({ where: { id: current.id }, data: { state: 'active', startedAt: new Date() }, select: SESSION_SELECT });
+      const startedAt = new Date();
+      await tx.visitSessionParticipant.updateMany({ where: { sessionId: current.id, state: 'ready' }, data: { state: 'active', seenAt: startedAt } });
+      return tx.visitSession.update({ where: { id: current.id }, data: { state: 'active', startedAt }, select: SESSION_SELECT });
     });
     this.publishSession(session, 'visit.session.updated');
     return this.sessionSummary(session);
   }
 
   async endSession(userId: string, sessionId: string, reason?: string) {
-    const session = await this.prisma.$transaction(tx => this.endSessionInTransaction(tx, sessionId, userId, reason));
+    const session = await this.prisma.$transaction(async tx => {
+      const ended = await this.endSessionInTransaction(tx, sessionId, userId, reason);
+      await this.releaseSessionReservations(tx, sessionId);
+      return ended;
+    });
     this.publishSession(session, 'visit.session.ended');
     return this.sessionSummary(session);
   }
 
   async heartbeat(userId: string, sessionId: string) {
-    const session = await this.prisma.visitSession.findUnique({ where: { id: sessionId }, select: { id: true, visitorOwnerUserId: true, hostUserId: true, state: true } });
+    const session = await this.prisma.visitSession.findUnique({ where: { id: sessionId }, select: SESSION_SELECT });
     if (!session) throw new NotFoundException({ code: 'VISIT_SESSION_NOT_FOUND', message: 'Visit session was not found' });
-    const role = this.roleFor(session, userId);
-    if (!role) throw new ForbiddenException({ code: 'VISIT_SESSION_NOT_PARTICIPANT', message: 'Visit session is not available' });
     if (!SESSION_HEARTBEAT.includes(session.state)) throw new ConflictException({ code: 'VISIT_SESSION_STATE_CHANGED', message: 'Visit session is not available' });
-    await this.assertEligible(this.prisma as any, session.visitorOwnerUserId, session.hostUserId);
-    const updated = await this.prisma.visitSession.update({ where: { id: session.id }, data: role === 'owner' ? { visitorOwnerSeenAt: new Date() } : { hostSeenAt: new Date() }, select: SESSION_SELECT });
+    const role = this.roleFor(session, userId);
+    const participant = await this.prisma.visitSessionParticipant.findUnique({ where: { sessionId_userId: { sessionId, userId } }, select: { id: true, state: true } });
+    if (!role && (!participant || participant.state === 'left')) throw new ForbiddenException({ code: 'VISIT_SESSION_NOT_PARTICIPANT', message: 'Visit session is not available' });
+    const peers = await this.prisma.visitSessionParticipant.findMany({ where: { sessionId, state: { not: 'left' }, userId: { not: userId } }, select: { userId: true } });
+    for (const peer of peers) await this.assertEligible(this.prisma as any, userId, peer.userId);
+    const seenAt = new Date();
+    await this.prisma.visitSessionParticipant.updateMany({ where: { sessionId, userId, state: { not: 'left' } }, data: { seenAt } });
+    if (!role) return this.sessionSummary(session);
+    const updated = await this.prisma.visitSession.update({ where: { id: session.id }, data: role === 'owner' ? { visitorOwnerSeenAt: seenAt } : { hostSeenAt: seenAt }, select: SESSION_SELECT });
     return this.sessionSummary(updated);
   }
 
@@ -219,7 +286,11 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     const sessions = await this.prisma.visitSession.findMany({ where: { state: { in: SESSION_LIVE }, OR: [{ visitorOwnerUserId: userA, hostUserId: userB }, { visitorOwnerUserId: userB, hostUserId: userA }] }, select: { id: true, state: true } });
     for (const session of sessions) {
       const claimed = await this.prisma.visitSession.updateMany({ where: { id: session.id, state: session.state }, data: { state: session.state === 'active' ? 'ended' : 'cancelled', endedAt: new Date(), endReason: reason, assetPackRefId: null } });
-      if (claimed.count) this.publishSession(await this.prisma.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }), 'visit.session.ended');
+      if (claimed.count) {
+        await this.prisma.visitReservation.deleteMany({ where: { sessionId: session.id } });
+        await this.prisma.visitSessionParticipant.updateMany({ where: { sessionId: session.id, state: { not: 'left' } }, data: { state: 'left', leftAt: new Date(), assetPackRefId: null } });
+        this.publishSession(await this.prisma.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }), 'visit.session.ended');
+      }
     }
   }
 
@@ -227,7 +298,11 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     const sessions = await this.prisma.visitSession.findMany({ where: { networkCompanionId: companionId, state: { in: SESSION_LIVE } }, select: { id: true, state: true } });
     for (const session of sessions) {
       const claimed = await this.prisma.visitSession.updateMany({ where: { id: session.id, state: session.state }, data: { state: session.state === 'active' ? 'ended' : 'cancelled', endedAt: new Date(), endReason: reason, assetPackRefId: null } });
-      if (claimed.count) this.publishSession(await this.prisma.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }), 'visit.session.ended');
+      if (claimed.count) {
+        await this.prisma.visitReservation.deleteMany({ where: { sessionId: session.id } });
+        await this.prisma.visitSessionParticipant.updateMany({ where: { sessionId: session.id, state: { not: 'left' } }, data: { state: 'left', leftAt: new Date(), assetPackRefId: null } });
+        this.publishSession(await this.prisma.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }), 'visit.session.ended');
+      }
     }
   }
 
@@ -240,11 +315,17 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       const changedSessions: any[] = [];
       for (const invitation of pending) {
         const changed = await tx.visitInvitation.updateMany({ where: { id: invitation.id, status: PENDING }, data: { status: 'cancelled', cancelledAt: now, assetPackRefId: null } });
-        if (changed.count) changedInvitations.push(await tx.visitInvitation.findUniqueOrThrow({ where: { id: invitation.id }, select: INVITATION_SELECT }));
+        if (changed.count) {
+          await tx.visitReservation.deleteMany({ where: { invitationId: invitation.id } });
+          changedInvitations.push(await tx.visitInvitation.findUniqueOrThrow({ where: { id: invitation.id }, select: INVITATION_SELECT }));
+        }
       }
       for (const session of live) {
         const changed = await tx.visitSession.updateMany({ where: { id: session.id, state: session.state }, data: { state: session.state === 'active' ? 'ended' : 'cancelled', endedAt: now, endReason: reason, assetPackRefId: null } });
-        if (changed.count) changedSessions.push(await tx.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }));
+        if (changed.count) {
+          await this.releaseSessionReservations(tx, session.id);
+          changedSessions.push(await tx.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }));
+        }
       }
       return [changedInvitations, changedSessions] as const;
     });
@@ -261,9 +342,26 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       for (const invitation of expired) {
         const updated = await this.prisma.visitInvitation.updateMany({ where: { id: invitation.id, status: PENDING, expiresAt: { lt: now } }, data: { status: 'expired', respondedAt: now, assetPackRefId: null } });
         if (updated.count) {
+          await this.prisma.visitReservation.deleteMany({ where: { invitationId: invitation.id } });
           const record = await this.prisma.visitInvitation.findUniqueOrThrow({ where: { id: invitation.id }, select: INVITATION_SELECT });
           this.publishInvitation(record, 'visit.invitation.updated');
         }
+      }
+      const expiredJoinRequests = await this.prisma.visitJoinRequest.findMany({
+        take: limit,
+        where: { status: PENDING, expiresAt: { lt: now } },
+        select: { id: true, sessionId: true, requesterUserId: true },
+      });
+      for (const request of expiredJoinRequests) {
+        const updated = await this.prisma.visitJoinRequest.updateMany({
+          where: { id: request.id, status: PENDING, expiresAt: { lt: now } },
+          data: { status: 'expired', respondedAt: now, assetPackRefId: null },
+        });
+        if (!updated.count) continue;
+        await this.prisma.visitReservation.deleteMany({ where: { userId: request.requesterUserId, joinRequestId: request.id } });
+        this.events.publishToUser(request.requesterUserId, 'visit.join_request.updated', { sessionId: request.sessionId, joinRequestId: request.id });
+        const participants = await this.prisma.visitSessionParticipant.findMany({ where: { sessionId: request.sessionId, state: { not: 'left' } }, select: { userId: true } });
+        for (const participant of participants) this.events.publishToUser(participant.userId, 'visit.join_request.updated', { sessionId: request.sessionId, joinRequestId: request.id });
       }
       const sessions = await this.prisma.visitSession.findMany({ take: limit, where: { state: { in: SESSION_LIVE } }, select: { id: true, state: true, createdAt: true, readyAt: true, startedAt: true, visitorOwnerSeenAt: true, hostSeenAt: true } });
       for (const session of sessions) {
@@ -271,7 +369,11 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
         if (!reason) continue;
         const state = session.state === 'active' ? 'ended' : 'cancelled';
         const updated = await this.prisma.visitSession.updateMany({ where: { id: session.id, state: session.state }, data: { state, endedAt: now, endReason: reason, assetPackRefId: null } });
-        if (updated.count) this.publishSession(await this.prisma.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }), 'visit.session.ended');
+        if (updated.count) {
+          await this.prisma.visitReservation.deleteMany({ where: { sessionId: session.id } });
+          await this.prisma.visitSessionParticipant.updateMany({ where: { sessionId: session.id, state: { not: 'left' } }, data: { state: 'left', leftAt: now, assetPackRefId: null } });
+          this.publishSession(await this.prisma.visitSession.findUniqueOrThrow({ where: { id: session.id }, select: SESSION_SELECT }), 'visit.session.ended');
+        }
       }
     } finally { this.cleanupRunning = false; }
   }
@@ -284,7 +386,9 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       if ((role === 'host' ? current.hostUserId : current.visitorOwnerUserId) !== userId) throw new ForbiddenException({ code: role === 'host' ? 'VISIT_INVITATION_NOT_HOST' : 'VISIT_INVITATION_NOT_OWNED', message: 'Visit invitation is not available' });
       if (current.status === status) return current;
       if (current.status !== PENDING) throw new ConflictException({ code: 'VISIT_INVITATION_NOT_PENDING', message: 'Visit invitation is no longer pending' });
-      return tx.visitInvitation.update({ where: { id: current.id }, data: status === 'declined' ? { status, respondedAt: new Date(), assetPackRefId: null } : { status, cancelledAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
+      const updated = await tx.visitInvitation.update({ where: { id: current.id }, data: status === 'declined' ? { status, respondedAt: new Date(), assetPackRefId: null } : { status, cancelledAt: new Date(), assetPackRefId: null }, select: INVITATION_SELECT });
+      await tx.visitReservation.deleteMany({ where: { userId: current.visitorOwnerUserId, invitationId: current.id } });
+      return updated;
     });
     this.publishInvitation(invitation, 'visit.invitation.updated');
     return this.invitationSummary(invitation);
@@ -316,7 +420,10 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   private async requireParticipantSession(userId: string, sessionId: string) {
     const session = await this.prisma.visitSession.findUnique({ where: { id: sessionId }, select: SESSION_SELECT });
     if (!session) throw new NotFoundException({ code: 'VISIT_SESSION_NOT_FOUND', message: 'Visit session was not found' });
-    if (!this.roleFor(session, userId)) throw new ForbiddenException({ code: 'VISIT_SESSION_NOT_PARTICIPANT', message: 'Visit session is not available' });
+    if (!this.roleFor(session, userId)) {
+      const participant = await this.prisma.visitSessionParticipant.findUnique({ where: { sessionId_userId: { sessionId, userId } }, select: { state: true } });
+      if (!participant || participant.state === 'left') throw new ForbiddenException({ code: 'VISIT_SESSION_NOT_PARTICIPANT', message: 'Visit session is not available' });
+    }
     return session;
   }
 
@@ -423,6 +530,29 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
     if (!forward || !reverse || blocked || activeParticipants !== 2) {
       this.notAvailable();
     }
+  }
+
+  async assertCanSwitchToCompanion(userId: string, companionId: string): Promise<void> {
+    const reservation = await this.prisma.visitReservation.findUnique({ where: { userId }, select: { networkCompanionId: true } });
+    if (reservation && reservation.networkCompanionId !== companionId) throw new ConflictException({ code: 'VISIT_COMPANION_RESERVED', message: 'The active Companion is reserved for a Visit' });
+  }
+
+  async assertCompanionMutationAllowed(userId: string, companionId: string): Promise<void> {
+    const reservation = await this.prisma.visitReservation.findUnique({ where: { userId }, select: { networkCompanionId: true } });
+    if (reservation?.networkCompanionId === companionId) throw new ConflictException({ code: 'VISIT_COMPANION_RESERVED', message: 'The active Companion is reserved for a Visit' });
+  }
+
+  private async assertNoReservation(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+    const reservation = await tx.visitReservation.findUnique({ where: { userId }, select: { kind: true } });
+    if (reservation) throw new ConflictException({ code: 'VISIT_RESERVATION_EXISTS', message: 'This Companion already has a Visit reservation' });
+  }
+
+  private async releaseSessionReservations(tx: Prisma.TransactionClient, sessionId: string): Promise<void> {
+    await tx.visitReservation.deleteMany({ where: { sessionId } });
+    await tx.visitSessionParticipant.updateMany({
+      where: { sessionId, state: { not: 'left' } },
+      data: { state: 'left', leftAt: new Date(), assetPackRefId: null },
+    });
   }
 
   private async assertVisitorOwnerAvailable(tx: any, visitorOwnerUserId: string) {

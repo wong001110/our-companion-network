@@ -18,6 +18,28 @@ function invitation(status = 'pending') {
 function session(state = 'preparing') {
   return { id: sessionId, invitationId, visitorOwnerUserId: owner, hostUserId: host, networkCompanionId: companionId, assetPackSnapshotId: packId, assetPackRefId: ['preparing', 'ready', 'active', 'ending'].includes(state) ? packId : null, state, visitorOwnerReadyAt: null, hostReadyAt: null, readyAt: null, startedAt: null, endedAt: null, endReason: null, failureCode: null, createdAt: now, updatedAt: now };
 }
+function emptyReservationModel() {
+  return {
+    findUnique: jest.fn().mockResolvedValue(null),
+    create: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+  };
+}
+
+function acceptanceReservationModel() {
+  return {
+    findUnique: jest.fn(({ where }: { where: { userId: string } }) => Promise.resolve(
+      where.userId === owner
+        ? { userId: owner, kind: 'outgoing_invitation', invitationId, networkCompanionId: companionId }
+        : null,
+    )),
+    create: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+  };
+}
+
 function service(prisma: Record<string, unknown> = {}) {
   const storage = { capability: { uploadsEnabled: true, downloadsEnabled: true }, createGetUrl: jest.fn() };
   const config = { limits: { invitationTtlHours: 24, preparationTtlMinutes: 10, sessionMaxMinutes: 30, heartbeatIntervalSeconds: 15, heartbeatTimeoutSeconds: 60 } };
@@ -38,6 +60,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
       friendship: { findUnique: jest.fn().mockResolvedValue({}) },
       blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null) },
+      visitReservation: emptyReservationModel(),
       visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue(created) },
       user: {
         findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', activeNetworkCompanionId: companionId }),
@@ -79,7 +102,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
   it('rejects invitation creation when the immutable snapshot lacks a required Visual Visit animation', async () => {
     const tx = {
       $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) },
-      visitSession: { findFirst: jest.fn().mockResolvedValue(null) }, visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      visitSession: { findFirst: jest.fn().mockResolvedValue(null) }, visitReservation: emptyReservationModel(), visitInvitation: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
       user: {
         findUnique: jest.fn().mockResolvedValue({ accountStatus: 'ACTIVE', activeNetworkCompanionId: companionId }),
         count: jest.fn().mockResolvedValue(2),
@@ -96,6 +119,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
     const tx = {
       $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(0), create: jest.fn() },
+      visitReservation: acceptanceReservationModel(),
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
       networkCompanion: { findUnique: jest.fn().mockResolvedValue({ id: companionId, published: true, visibility: 'friends_only' }) },
       companionAssetPack: { findUnique: jest.fn().mockResolvedValue({ id: packId, companionId, status: 'active', manifest: visualManifest('Walk_Right') }) },
@@ -109,6 +133,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
     const tx = {
       $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) },
       visitSession: { findFirst: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(2), create: jest.fn() },
+      visitReservation: acceptanceReservationModel(),
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
     };
     const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
@@ -120,6 +145,7 @@ describe('VisitService S4 lifecycle and privacy', () => {
     const tx = {
       $queryRaw: jest.fn(), friendship: { findUnique: jest.fn().mockResolvedValue({}) }, blockedUser: { findFirst: jest.fn().mockResolvedValue(null) }, user: { count: jest.fn().mockResolvedValue(2) },
       visitSession: { findFirst: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'host-outgoing' }), count: jest.fn().mockResolvedValue(0), create: jest.fn() },
+      visitReservation: acceptanceReservationModel(),
       visitInvitation: { findUnique: jest.fn().mockResolvedValue({ ...invitation(), expiresAt: new Date(Date.now() + 60_000), session: null }), update: jest.fn() },
     };
     const { instance } = service({ $transaction: jest.fn((operation) => operation(tx)) });
@@ -215,7 +241,11 @@ describe('VisitService S4 lifecycle and privacy', () => {
 
   it('ends an active revocation as ended rather than leaving a live session', async () => {
     const updated = { ...session('ended'), endedAt: now, endReason: 'friendship_removed' };
-    const prisma = { visitSession: { findMany: jest.fn().mockResolvedValue([{ id: sessionId, state: 'active' }]), findUniqueOrThrow: jest.fn().mockResolvedValue(updated), updateMany: jest.fn().mockResolvedValue({ count: 1 }) } };
+    const prisma = {
+      visitSession: { findMany: jest.fn().mockResolvedValue([{ id: sessionId, state: 'active' }]), findUniqueOrThrow: jest.fn().mockResolvedValue(updated), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      visitReservation: { deleteMany: jest.fn().mockResolvedValue({ count: 2 }) },
+      visitSessionParticipant: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
+    };
     const { instance, events } = service(prisma);
     await instance.endSessionsBetween(owner, host, 'friendship_removed');
     expect(prisma.visitSession.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ state: 'ended', endReason: 'friendship_removed' }) }));

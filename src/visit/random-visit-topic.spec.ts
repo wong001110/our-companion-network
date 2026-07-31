@@ -8,7 +8,8 @@ describe('random Visit topic contract', () => {
     expect(source).toContain('randomVisitsEnabled');
     expect(source).toContain('randomVisitAudience');
     expect(source).toContain('topicOwnerCompanionId');
-    expect(source).toContain('socialShare: { create:');
+    expect(source).toContain('tx.visitRoomTopic.create');
+    expect(source).toContain('tx.visitShareEnvelope.create');
     expect(source).toContain('visitMode: invitation.visitMode');
     expect(source).toContain("audience: 'friends'");
     expect(source).toContain('A visitor/host/Companion route can reserve only one pending invitation');

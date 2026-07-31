@@ -46,6 +46,7 @@ export class CompanionService {
   }
 
   async activate(userId: string, companionId: string) {
+    await this.visits?.assertCanSwitchToCompanion(userId, companionId);
     const companion = await this.requireOwnedCompanion(userId, companionId);
     if (companion.id === (await this.prisma.user.findUnique({ where: { id: userId }, select: { activeNetworkCompanionId: true } }))?.activeNetworkCompanionId) {
       return { activeNetworkCompanionId: companionId, changed: false };
@@ -64,6 +65,7 @@ export class CompanionService {
   }
 
   async unpublish(userId: string, companionId: string) {
+    await this.visits?.assertCompanionMutationAllowed(userId, companionId);
     const companion = await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT "id" FROM "NetworkCompanion" WHERE "id" = ${companionId} FOR UPDATE`;
       const owned = await tx.networkCompanion.findUnique({ where: { id: companionId }, select: { ownerUserId: true } });
@@ -286,6 +288,7 @@ export class CompanionService {
   async completeAssetPack(userId: string, assetPackId: string): Promise<CompleteAssetPackResult> {
     const ownedPack = await this.requireOwnedPack(userId, assetPackId, true);
     if (ownedPack.status === 'active') return this.completeEnvelopeForActivePack(ownedPack);
+    await this.visits?.assertCompanionMutationAllowed(userId, ownedPack.companionId);
     this.requireStorage();
     if (!['uploading', 'verifying'].includes(ownedPack.status)) throw new ConflictException({ code: 'ASSET_PACK_NOT_UPLOADABLE', message: 'Asset Pack cannot be completed' });
     this.assertUploadSessionCurrent(ownedPack);
@@ -366,6 +369,7 @@ export class CompanionService {
 
   async activateAssetPack(userId: string, assetPackId: string) {
     const ownedPack = await this.requireOwnedPack(userId, assetPackId, true);
+    await this.visits?.assertCompanionMutationAllowed(userId, ownedPack.companionId);
     const companion = await this.withActivePackUniqueRetry(() => this.prisma.$transaction(tx => this.activateVerifiedPackInTransaction(tx, {
       companionId: ownedPack.companionId,
       targetPackId: assetPackId,
