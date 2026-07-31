@@ -16,4 +16,12 @@ describe('random Visit topic contract', () => {
     expect(source).toContain('topicOwnerCompanionId,');
     expect(source).toContain('topicTitle,');
   });
+
+  it('returns one canonical nested topic without raw snapshot bookkeeping', () => {
+    const source = readFileSync(join(__dirname, 'visit.service.ts'), 'utf8');
+    expect(source).toContain('topic: topicTitle ? {');
+    expect(source).toContain('topicRefId: _topicRefId');
+    expect(source).toContain('topicCreatedByUserId: _topicCreatedByUserId');
+    expect(source).toContain('topicAllowRecipientSave,');
+  });
 });
