@@ -98,6 +98,22 @@ jobs:
           if old not in source:
               raise SystemExit('Visit room schema spacing assertion anchor not found')
           room_spec.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          schema = Path('prisma/schema.prisma')
+          source = schema.read_text(encoding='utf-8')
+          old = '  @@unique([sessionId, companionLowId, companionHighId])'
+          new = '  @@unique([sessionId, companionLowId, companionHighId], map: "VisitRelSettlement_session_low_high_key")'
+          if old not in source:
+              raise SystemExit('relationship settlement unique constraint anchor not found')
+          schema.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          migration = Path('prisma/migrations/20260731070000_social_room_dialogue_settlement/migration.sql')
+          source = migration.read_text(encoding='utf-8')
+          old = 'VisitRelationshipSettlement_sessionId_companionLowId_companionHighId_key'
+          new = 'VisitRelSettlement_session_low_high_key'
+          if old not in source:
+              raise SystemExit('relationship settlement migration index anchor not found')
+          migration.write_text(source.replace(old, new), encoding='utf-8')
           PY
       - run: npx prisma format
       - run: npm run prisma:generate
