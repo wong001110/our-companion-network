@@ -52,12 +52,12 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
       if (!supportsVisualVisit(snapshot.pack.manifest)) this.visualAssetsUnavailable();
       const visitMode = input.mode ?? 'standard';
       const topic = await this.resolveInvitationTopic(tx, visitorOwnerUserId, hostUserId, snapshot.companion.id, visitMode, input.topicId);
+      // A visitor/host/Companion route can reserve only one pending invitation.
       const existing = await tx.visitInvitation.findFirst({ where: {
         visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id,
-        visitMode, topicRefId: topic?.topicRefId ?? null,
         status: PENDING, expiresAt: { gt: new Date() },
-      }, select: INVITATION_SELECT });
-      if (existing) throw new ConflictException({ code: 'VISIT_INVITATION_ALREADY_EXISTS', message: 'An equivalent Visit invitation is already pending' });
+      }, select: { id: true } });
+      if (existing) throw new ConflictException({ code: 'VISIT_INVITATION_ALREADY_EXISTS', message: 'A Visit invitation is already pending for this route' });
       return tx.visitInvitation.create({ data: {
         visitorOwnerUserId, hostUserId, networkCompanionId: snapshot.companion.id, assetPackSnapshotId: snapshot.pack.id, assetPackRefId: snapshot.pack.id,
         companionName: snapshot.companion.name, companionDescription: snapshot.companion.publicDescription, companionTags: snapshot.companion.publicTags,
@@ -102,9 +102,17 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
         where: { id: invitation.hostUserId },
         select: { activeNetworkCompanionId: true },
       });
+      const hostNetworkCompanionId = invitation.visitMode === 'random_host_topic'
+        ? invitation.topicOwnerCompanionId
+        : host?.activeNetworkCompanionId;
+      if (!hostNetworkCompanionId) this.notAvailable();
+      if (invitation.visitMode === 'random_host_topic'
+        && host?.activeNetworkCompanionId !== hostNetworkCompanionId) {
+        throw new ConflictException({ code: 'VISIT_HOST_COMPANION_CHANGED', message: 'The Host Companion changed after this invitation was created' });
+      }
       const session = await tx.visitSession.create({ data: {
         invitationId: invitation.id, visitorOwnerUserId: invitation.visitorOwnerUserId, hostUserId: invitation.hostUserId,
-        hostNetworkCompanionId: host?.activeNetworkCompanionId ?? null,
+        hostNetworkCompanionId,
         networkCompanionId: invitation.networkCompanionId, assetPackSnapshotId: invitation.assetPackSnapshotId, assetPackRefId: pack.id,
         visitMode: invitation.visitMode,
         ...(invitation.topicTitle && invitation.topicSummary && invitation.topicCreatedByUserId ? {
@@ -343,6 +351,7 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
         where: {
           id: topicId,
           companionId: visitorCompanionId,
+          audience: 'friends',
           revokedAt: null,
           OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
         },
@@ -444,19 +453,32 @@ export class VisitService implements OnModuleInit, OnModuleDestroy {
   private async lockCompanion(tx: Prisma.TransactionClient, companionId: string) { await tx.$queryRaw`SELECT "id" FROM "NetworkCompanion" WHERE "id" = ${companionId} FOR UPDATE`; }
   private roleFor(session: { visitorOwnerUserId: string; hostUserId: string }, userId: string): 'owner' | 'host' | undefined { return session.visitorOwnerUserId === userId ? 'owner' : session.hostUserId === userId ? 'host' : undefined; }
   private invitationSummary(value: any) {
-    const { assetPackSnapshotId, assetPackRefId: _assetPackRefId, topicRefId: _topicRefId, topicCreatedByUserId: _topicCreatedByUserId, ...summary } = value;
+    const {
+      assetPackSnapshotId,
+      assetPackRefId: _assetPackRefId,
+      topicRefId: _topicRefId,
+      topicCreatedByUserId: _topicCreatedByUserId,
+      topicOwnerCompanionId,
+      topicTitle,
+      topicSummary,
+      topicTags,
+      topicSourceUrl,
+      topicShareScope,
+      topicAllowRecipientSave,
+      ...summary
+    } = value;
     return {
       ...summary,
       assetPackId: assetPackSnapshotId,
       companionDescription: value.companionDescription ?? undefined,
-      topic: value.topicTitle ? {
-        ownerCompanionId: value.topicOwnerCompanionId,
-        title: value.topicTitle,
-        summary: value.topicSummary,
-        tags: value.topicTags,
-        sourceUrl: value.topicShareScope === 'summary_and_source' ? value.topicSourceUrl ?? undefined : undefined,
-        shareScope: value.topicShareScope,
-        allowRecipientSave: value.topicAllowRecipientSave,
+      topic: topicTitle ? {
+        ownerCompanionId: topicOwnerCompanionId,
+        title: topicTitle,
+        summary: topicSummary,
+        tags: topicTags,
+        sourceUrl: topicShareScope === 'summary_and_source' ? topicSourceUrl ?? undefined : undefined,
+        shareScope: topicShareScope,
+        allowRecipientSave: topicAllowRecipientSave,
       } : undefined,
       topicSelectedAt: value.topicSelectedAt?.toISOString(),
       respondedAt: value.respondedAt?.toISOString(),

@@ -117,13 +117,34 @@ export class CompanionService {
 
   async revokeShareableTopic(userId: string, companionId: string, topicId: string) {
     await this.requireOwnedTopic(userId, companionId, topicId);
-    const topic = await this.prisma.shareableTopic.update({
-      where: { id: topicId },
-      data: { revokedAt: new Date(), eligibleForRandomVisit: false },
-      select: TOPIC_SELECT,
+    const now = new Date();
+    const result = await this.prisma.$transaction(async tx => {
+      const topic = await tx.shareableTopic.update({
+        where: { id: topicId },
+        data: { revokedAt: now, eligibleForRandomVisit: false },
+        select: TOPIC_SELECT,
+      });
+      const remainingRandomTopics = await tx.shareableTopic.count({
+        where: {
+          companionId,
+          eligibleForRandomVisit: true,
+          revokedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      });
+      const disabled = remainingRandomTopics === 0
+        ? await tx.networkCompanion.updateMany({
+            where: { id: companionId, ownerUserId: userId, randomVisitsEnabled: true },
+            data: { randomVisitsEnabled: false },
+          })
+        : { count: 0 };
+      return { topic, randomVisitsDisabled: disabled.count === 1 };
     });
     await this.publishInvalidation(userId, 'companion.topic.revoked', { ownerUserId: userId, companionId, topicId });
-    return this.shareableTopic(topic);
+    if (result.randomVisitsDisabled) {
+      await this.publishInvalidation(userId, 'companion.profile.updated', { ownerUserId: userId, companionId });
+    }
+    return this.shareableTopic(result.topic);
   }
 
   async updateSocialPolicy(userId: string, companionId: string, dto: UpdateCompanionSocialPolicyDto) {

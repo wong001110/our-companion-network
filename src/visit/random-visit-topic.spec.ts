@@ -10,5 +10,10 @@ describe('random Visit topic contract', () => {
     expect(source).toContain('topicOwnerCompanionId');
     expect(source).toContain('socialShare: { create:');
     expect(source).toContain('visitMode: invitation.visitMode');
+    expect(source).toContain("audience: 'friends'");
+    expect(source).toContain('A visitor/host/Companion route can reserve only one pending invitation');
+    expect(source).toContain('VISIT_HOST_COMPANION_CHANGED');
+    expect(source).toContain('topicOwnerCompanionId,');
+    expect(source).toContain('topicTitle,');
   });
 });
